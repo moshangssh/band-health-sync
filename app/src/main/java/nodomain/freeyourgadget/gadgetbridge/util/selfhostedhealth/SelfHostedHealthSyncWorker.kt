@@ -26,6 +26,7 @@ import androidx.work.Worker
 import androidx.work.WorkerParameters
 import nodomain.freeyourgadget.gadgetbridge.GBApplication
 import nodomain.freeyourgadget.gadgetbridge.R
+import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiCoordinator
 import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiEmotionsSampleProvider
 import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiSleepApneaSampleProvider
 import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiSleepStatsSampleProvider
@@ -212,7 +213,8 @@ class SelfHostedHealthSyncWorker(
      *
      * The SpO2, stress, HRV and temperature providers and the resting heart rate cover any device
      * that exposes them; the sleep statistics, emotions and sleep apnea tables have no coordinator
-     * accessor, so they are read directly and simply come back empty on devices that never fill them.
+     * accessor, so they are read directly and only for Huawei/Honor devices, which are the only ones
+     * that ever fill them.
      */
     private fun readHealthData(
         device: GBDevice,
@@ -252,12 +254,56 @@ class SelfHostedHealthSyncWorker(
                 }
             }
 
+            // Only Huawei/Honor devices ever fill these three tables, and they have no coordinator
+            // accessor, so they are read directly here; everyone else skips the queries entirely.
+            val isHuawei = coordinator is HuaweiCoordinator
+            val sleepStats = if (isHuawei) {
+                HuaweiSleepStatsSampleProvider(device, session)
+                    .getSleepSamples(fromMs, toMs)
+                    .map { sleepStatsPoint(it, zone) }
+            } else {
+                emptyList()
+            }
+            val emotions = if (isHuawei) {
+                HuaweiEmotionsSampleProvider(device, session)
+                    .getAllSamples(fromMs, toMs)
+                    .map {
+                        SelfHostedHealthPoint(
+                            it.timestamp, linkedMapOf(
+                                "last_timestamp" to iso(it.lastTimestamp, zone),
+                                "status" to it.status,
+                                "origin_status" to it.originStatus,
+                                "valence" to it.valenceCharacter,
+                                "arousal" to it.arousalCharacter
+                            )
+                        )
+                    }
+            } else {
+                emptyList()
+            }
+            val sleepApnea = if (isHuawei) {
+                HuaweiSleepApneaSampleProvider(device, session)
+                    .getAllSamples(fromMs, toMs)
+                    .map {
+                        SelfHostedHealthPoint(
+                            it.timestamp, linkedMapOf(
+                                "last_timestamp" to iso(it.lastTimestamp, zone),
+                                "level" to it.level
+                            )
+                        )
+                    }
+            } else {
+                emptyList()
+            }
+
             SelfHostedHealthData(
                 samples = samples,
                 extras = SelfHostedHealthExtras(
                     spo2 = coordinator.getSpo2SampleProvider(device, session)
                         ?.getAllSamples(fromMs, toMs)
-                        ?.filter { it.spo2 > 0 }
+                        // SpO2 is a percentage: a raw signed byte can reach 101..127, which the
+                        // Health Connect syncer and the data exporter already reject.
+                        ?.filter { it.spo2 in 1..100 }
                         ?.map { SelfHostedHealthPoint(it.timestamp, mapOf("value" to it.spo2)) }
                         .orEmpty(),
                     stress = coordinator.getStressSampleProvider(device, session)
@@ -271,11 +317,16 @@ class SelfHostedHealthSyncWorker(
                         .orEmpty(),
                     hrv = coordinator.getHrvValueSampleProvider(device, session)
                         ?.getAllSamples(fromMs, toMs)
-                        ?.filter { it.value > 0 }
+                        // RMSSD in ms; the same plausible span the Health Connect syncer keeps.
+                        ?.filter { it.value in 1..200 }
                         ?.map { SelfHostedHealthPoint(it.timestamp, mapOf("value" to it.value)) }
                         .orEmpty(),
                     temperature = coordinator.getTemperatureSampleProvider(device, session)
                         ?.getAllSamples(fromMs, toMs)
+                        // Celsius skin or body temperature; the same plausible span the Health
+                        // Connect syncer keeps. A sentinel (0, 255) or a negative raw byte is not
+                        // a reading, and a Float.NaN fails the range test on its own.
+                        ?.filter { it.temperature in 15.0f..45.0f }
                         ?.map {
                             SelfHostedHealthPoint(
                                 it.timestamp, mapOf("value" to it.temperature.toDouble())
@@ -285,28 +336,9 @@ class SelfHostedHealthSyncWorker(
                     restingHeartRate = restingHeartRate,
                     activeCalories = calories,
                     distance = distance,
-                    sleepStats = HuaweiSleepStatsSampleProvider(device, session)
-                        .getSleepSamples(fromMs, toMs)
-                        .map { sleepStatsPoint(it, zone) },
-                    emotions = HuaweiEmotionsSampleProvider(device, session)
-                        .getAllSamples(fromMs, toMs)
-                        .map {
-                            SelfHostedHealthPoint(it.timestamp, linkedMapOf(
-                                "last_timestamp" to iso(it.lastTimestamp, zone),
-                                "status" to it.status,
-                                "origin_status" to it.originStatus,
-                                "valence" to it.valenceCharacter,
-                                "arousal" to it.arousalCharacter
-                            ))
-                        },
-                    sleepApnea = HuaweiSleepApneaSampleProvider(device, session)
-                        .getAllSamples(fromMs, toMs)
-                        .map {
-                            SelfHostedHealthPoint(it.timestamp, linkedMapOf(
-                                "last_timestamp" to iso(it.lastTimestamp, zone),
-                                "level" to it.level
-                            ))
-                        }
+                    sleepStats = sleepStats,
+                    emotions = emotions,
+                    sleepApnea = sleepApnea
                 )
             )
         }
@@ -345,27 +377,13 @@ class SelfHostedHealthSyncWorker(
         url = url,
         date = day.date,
         manual = manual,
-        records = countRecords(day.body),
+        records = SelfHostedHealthLog.countRecords(day.body),
         httpCode = result.httpCode,
         responseTimeMs = result.responseTimeMs,
         success = result is SelfHostedHealthUploadResult.Success,
         message = (result as? SelfHostedHealthUploadResult.Failure)?.message,
         payload = prettyPayload(day.body)
     )
-
-    /** Steps, calories and distance count as one record each; every series entry counts on its own. */
-    private fun countRecords(body: JSONObject): Int {
-        var count = 0
-        for (key in TOTALS) {
-            if (body.has(key)) {
-                count++
-            }
-        }
-        for (key in SERIES) {
-            count += body.optJSONArray(key)?.length() ?: 0
-        }
-        return count
-    }
 
     /** Pretty-printed for the detail screen; falls back to compact if indentation ever throws. */
     private fun prettyPayload(body: JSONObject): String = try {
@@ -434,15 +452,6 @@ class SelfHostedHealthSyncWorker(
 
         /** Ceiling on a single run, so a stale cursor or a far-back start cannot read months at once. */
         private const val MAX_WINDOW_SECONDS = 31L * 24L * 60L * 60L
-
-        /** Payload keys that hold a single per-day total rather than a list of readings. */
-        private val TOTALS = listOf("steps", "active_calories", "distance")
-
-        /** Payload keys that hold a list of readings. */
-        private val SERIES = listOf(
-            "heart_rate", "sleep", "spo2", "stress", "hrv", "temperature",
-            "resting_heart_rate", "sleep_stats", "emotions", "sleep_apnea"
-        )
 
         private const val MAX_ATTEMPTS = 5
 

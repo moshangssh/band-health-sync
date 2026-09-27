@@ -135,6 +135,17 @@ class SelfHostedHealthExtrasTest {
         assertTrue(bodyFor(payload, "2026-09-02").has("hrv"))
     }
 
+    /** Nothing to send is not an error: no samples and no extras must yield no day payloads. */
+    @Test
+    fun `empty input produces no days`() {
+        val payload = SelfHostedHealthPayload.build(
+            emptyList(), zone, 0L, ts(2026, 9, 2, 10, 0), SelfHostedHealthExtras()
+        )
+
+        assertTrue(payload.days.isEmpty())
+        assertEquals(0L, payload.sleepUploadedThrough)
+    }
+
     /** [timestamp] is epoch seconds; the payload's points carry milliseconds. */
     private fun point(timestamp: Long, vararg fields: Pair<String, Any>): SelfHostedHealthPoint =
         SelfHostedHealthPoint(timestamp * 1000L, linkedMapOf(*fields))

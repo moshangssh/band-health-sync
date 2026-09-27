@@ -62,12 +62,7 @@ data class SelfHostedHealthExtras(
     val sleepStats: List<SelfHostedHealthPoint> = emptyList(),
     val emotions: List<SelfHostedHealthPoint> = emptyList(),
     val sleepApnea: List<SelfHostedHealthPoint> = emptyList()
-) {
-    val isEmpty: Boolean
-        get() = spo2.isEmpty() && stress.isEmpty() && hrv.isEmpty() && temperature.isEmpty() &&
-                restingHeartRate.isEmpty() && activeCalories.isEmpty() && distance.isEmpty() &&
-                sleepStats.isEmpty() && emotions.isEmpty() && sleepApnea.isEmpty()
-}
+)
 
 /**
  * Turns raw [ActivitySample]s into the JSON bodies the self-hosted health server ingests.
@@ -130,9 +125,6 @@ object SelfHostedHealthPayload {
         nowEpochSecond: Long,
         extras: SelfHostedHealthExtras = SelfHostedHealthExtras()
     ): SelfHostedHealthPayloadSet {
-        if (samples.isEmpty() && extras.isEmpty) {
-            return SelfHostedHealthPayloadSet(emptyList(), 0L)
-        }
         val sorted = samples.sortedBy { it.timestamp }
 
         val bodies = LinkedHashMap<LocalDate, JSONObject>()
