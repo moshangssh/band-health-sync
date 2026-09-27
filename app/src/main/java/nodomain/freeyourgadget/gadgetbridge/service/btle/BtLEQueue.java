@@ -99,6 +99,8 @@ public final class BtLEQueue implements Thread.UncaughtExceptionHandler {
     private final HandlerThread mReceiverThread;
     private final Handler mReceiverHandler;
     private final Handler mGattConnectTimeoutHandler;
+    /** watchdog that rescues a stuck CONNECTING state (see armGattConnectTimeout) */
+    private final Runnable mGattConnectTimeoutRunnable;
 
     private class DispatchRunnable implements Runnable {
         @Override
@@ -240,6 +242,14 @@ public final class BtLEQueue implements Thread.UncaughtExceptionHandler {
         // 2) create new objects
         mDisposed = new AtomicBoolean(false);
         mGattMonitor = new Object();
+        // Assigned after mGattMonitor: the lambda captures it, and a blank final field cannot be
+        // read before its own assignment.
+        mGattConnectTimeoutRunnable = () -> {
+            LOG.warn("Timed out connecting to GATT for {}", mGbDevice.getName());
+            synchronized (mGattMonitor) {
+                handleDisconnected(0x93 /* BluetoothGatt.GATT_CONNECTION_TIMEOUT */);
+            }
+        };
         mTransactions = new LinkedBlockingDeque<>();
         internalGattCallback = new NoThrowBluetoothGattCallback<>(new InternalGattCallback(deviceSupport));
         internalGattServerCallback = new InternalGattServerCallback(deviceSupport);
@@ -321,19 +331,34 @@ public final class BtLEQueue implements Thread.UncaughtExceptionHandler {
         }
     }
 
+    private long getGattConnectTimeoutMillis() {
+        // 30 seconds: the longest allowed ATT transaction timeout
+        // 32 seconds: the longest allowed BLE connection timeout for an established connection (supervision timeout)
+        // => wait a few more seconds for establishing a new connection
+        return GBApplication.getDevicePrefs(mGbDevice).getConnectionPriorityLowPower() ? 45000L : 5000L;
+    }
+
+    /**
+     * (Re)arm the watchdog that pulls a connection attempt out of {@link State#CONNECTING} when the
+     * remote never reports CONNECTED or DISCONNECTED. A wedged peer can otherwise leave the device
+     * stuck in CONNECTING forever, and {@link #connect()} refuses new attempts while the state is
+     * CONNECTING, so nothing would ever retry.
+     */
+    private void armGattConnectTimeout() {
+        mGattConnectTimeoutHandler.removeCallbacks(mGattConnectTimeoutRunnable);
+        mGattConnectTimeoutHandler.postDelayed(mGattConnectTimeoutRunnable, getGattConnectTimeoutMillis());
+    }
+
+    private void disarmGattConnectTimeout() {
+        mGattConnectTimeoutHandler.removeCallbacks(mGattConnectTimeoutRunnable);
+    }
+
     private boolean connectImp() {
         mPauseTransaction = false;
 
         LOG.info("Attempting to connect to {}", mGbDevice.getName());
 
-        final boolean lowPower = GBApplication.getDevicePrefs(mGbDevice).getConnectionPriorityLowPower();
-        // 30 seconds: the longest allowed ATT transaction timeout
-        // 32 seconds: the longest allowed BLE connection timeout for an established  connection (supervision timeout)
-        // => wait a few more seconds for establishing a new connection
-        mGattConnectTimeoutHandler.postDelayed(() -> {
-            LOG.warn("Timed out connecting to GATT for {}", mGbDevice.getName());
-            handleDisconnected(0x93 /* BluetoothGatt.GATT_CONNECTION_TIMEOUT */);
-        }, lowPower ? 45000L : 5000L);
+        armGattConnectTimeout();
 
         mBluetoothAdapter.cancelDiscovery();
         BluetoothDevice remoteDevice = mBluetoothAdapter.getRemoteDevice(mGbDevice.getAddress());
@@ -376,7 +401,7 @@ public final class BtLEQueue implements Thread.UncaughtExceptionHandler {
     void disconnect() {
         LOG.debug("disconnecting");
         synchronized (mGattMonitor) {
-            mGattConnectTimeoutHandler.removeCallbacksAndMessages(null);
+            disarmGattConnectTimeout();
             BluetoothGatt gatt = mBluetoothGatt;
             if (gatt != null) {
                 mBluetoothGatt = null;
@@ -406,7 +431,7 @@ public final class BtLEQueue implements Thread.UncaughtExceptionHandler {
         mPauseTransaction = false;
         mAbortTransaction = true;
         mAbortServerTransaction = true;
-        mGattConnectTimeoutHandler.removeCallbacksAndMessages(null);
+        disarmGattConnectTimeout();
         final CountDownLatch clientLatch = mWaitForActionResultLatch;
         if (clientLatch != null) {
             clientLatch.countDown();
@@ -455,6 +480,7 @@ public final class BtLEQueue implements Thread.UncaughtExceptionHandler {
                     mPauseTransaction = false;
                     if (mBluetoothGatt.connect()) {
                         setDeviceConnectionState(State.CONNECTING);
+                        armGattConnectTimeout();
                     } else {
                         forceDisconnect = true;
                     }
@@ -637,7 +663,7 @@ public final class BtLEQueue implements Thread.UncaughtExceptionHandler {
             switch (newState) {
                 case BluetoothProfile.STATE_CONNECTED:
                     LOG.info("Connected to GATT server.");
-                    mGattConnectTimeoutHandler.removeCallbacksAndMessages(null);
+                    disarmGattConnectTimeout();
                     setDeviceConnectionState(State.CONNECTED);
 
                     // discover services in the main thread (appears to fix Samsung connection problems)

@@ -630,6 +630,15 @@ public class DeviceCommunicationService extends Service implements SharedPrefere
         serviceCreationHandler.removeCallbacks(serviceCreationReconnect);
     }
 
+    /**
+     * Only an explicit disconnect cancels the fallback. A connect request restores a single
+     * device, so the fallback must stay armed to restore the others; connectToDevice skips
+     * devices that are already connected or connecting.
+     */
+    static boolean cancelsReconnectFallback(final String action) {
+        return ACTION_DISCONNECT.equals(action);
+    }
+
     private void scanAllDevices(){
         List<GBDevice> devices = GBApplication.app().getDeviceManager().getDevices();
         for(GBDevice device : devices){
@@ -839,7 +848,7 @@ public class DeviceCommunicationService extends Service implements SharedPrefere
 
         String action = intent.getAction();
 
-        if (ACTION_CONNECT.equals(action) || ACTION_DISCONNECT.equals(action)) {
+        if (cancelsReconnectFallback(action)) {
             cancelReconnectAfterServiceCreation();
         }
 
