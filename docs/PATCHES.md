@@ -327,12 +327,35 @@
   - 服务创建后 5 秒内若没有收到任何明确的连接、断开指令或 `START_STICKY` 空 intent，
     按设备原有的自动重连设置尝试恢复连接；
   - 收到 `START_STICKY` 空 intent（常见于系统一键清理后重建服务）时同样主动恢复连接；
-  - 收到明确的连接或断开指令时取消上述延迟兜底，避免重复直连或覆盖用户主动发起的断开；
+  - 收到明确的「断开」指令时取消上述延迟兜底，避免覆盖用户主动发起的断开；「连接」指令只
+    恢复单台设备，不取消兜底，其余要恢复的设备仍由兜底补上（兜底会跳过已连接/连接中的设备）；
   - 启用「扫描后重连」的设备继续走原有扫描路径，不被这个兜底重复触发。
 - 覆盖区：`service/DeviceCommunicationService.java`
-- 验证：`DeviceCommunicationServiceRestartTest` 4 项定向测试通过（空 intent 触发恢复、
-  只创建服务触发延迟恢复、明确指令不误判、明确指令取消兜底）；私仓已在真机通过一键清理
-  与单独上滑清理两种场景验证自动重连。
+- 验证：`DeviceCommunicationServiceRestartTest` 6 项定向测试通过（空 intent 触发恢复、
+  只创建服务触发延迟恢复、明确指令不误判、取消兜底不重连、连接指令保留兜底、断开指令取消
+  兜底）；私仓已在真机通过一键清理与单独上滑清理两种场景验证自动重连。
+
+### BLE 连接卡在「连接中」时自动退出并重试
+
+- 目的：BLE 设备链路异常后，`BtLEQueue` 可能长期停在 `CONNECTING`，App 一直显示「连接中」，
+  点卡片也不生效（`connect()` 在 `state >= CONNECTING` 时直接返回），最终只有重启手环才恢复。
+- 背景：设备断连后，底层蓝牙栈在部分路径上会持续上报 `CONNECTING`，却不给出最终的
+  `CONNECTED` / `DISCONNECTED`。上游的 `handleDisconnected` 立即重连分支
+  （`mBluetoothGatt.connect()`）和 `onConnectionStateChange(STATE_CONNECTING)` 都会设置
+  `CONNECTING`，但两者都不挂超时；而 `AutoConnectIntervalReceiver` 只处理
+  `WAITING_FOR_RECONNECT`，于是重连链整套死锁。实机观察：Huawei Band 11 夜间断连后卡在
+  「连接中」，重启手机也无效，只有重启手环才恢复。
+- 行为：
+  - 新增统一连接超时看门狗，任何进入 `CONNECTING` 的路径都重新计时；
+  - 超时（低功耗模式 45 秒，否则 5 秒，与原有建连超时一致）后走
+    `handleDisconnected(GATT_CONNECTION_TIMEOUT)` → `forceDisconnect` → `disconnect()` →
+    `WAITING_FOR_RECONNECT`，交回周期重连；
+  - 连接成功、主动断开、开始处理断连时撤销计时；
+  - 底层反复上报 `CONNECTING` 时只在尚未计时的情况下 arm，避免超时被无限重置。
+- 覆盖区：`service/btle/BtLEQueue.java`
+- 验证：`:app:compileMainlineDebugJavaWithJavac` 通过。
+- 限制：尚未在实机复验「手环侧卡死」场景。该修复让 App 不再永久卡死并持续重试，但手环
+  固件自身卡住时，仍要等它恢复可连（不一定是重启）后重试才会成功。
 
 ## 上游合并检查
 
@@ -346,4 +369,7 @@
 5. Huawei init 队列没有恢复成无条件下发 TruSleep / SleepBreath 的「关闭」状态。
 6. `AndroidManifest.xml` 里的 INTERNET 没有被上游的 `tools:node="remove"` 改回去，
    自托管健康同步仍能发出请求；`NewDataReceiver` 仍同时调度 HC 与自托管两条同步。
-7. 重新构建并解析 APK，不只依赖源码文本检查。
+7. `BtLEQueue` 的连接超时看门狗仍在：`armGattConnectTimeout` / `disarmGattConnectTimeout`
+   及 `CONNECTING` 的三条进入路径（`connectImp`、立即重连分支、`STATE_CONNECTING` 回调），
+   没有被上游还原成无超时。
+8. 重新构建并解析 APK，不只依赖源码文本检查。
