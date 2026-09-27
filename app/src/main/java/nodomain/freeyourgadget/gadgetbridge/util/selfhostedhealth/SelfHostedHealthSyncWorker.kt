@@ -40,7 +40,9 @@ import nodomain.freeyourgadget.gadgetbridge.util.cycle.CycleContextSyncWorker
 import org.json.JSONException
 import org.json.JSONObject
 import org.slf4j.LoggerFactory
+import java.time.Duration
 import java.time.Instant
+import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -408,17 +410,24 @@ class SelfHostedHealthSyncWorker(
          * Brings the periodic upload in line with the current settings, and is safe to call any
          * number of times: it cancels the schedule when the feature is off or the interval is 0, and
          * otherwise (re)installs one unique periodic work. Called on every settings change and once
-         * when the service starts, so a schedule lost to a reinstall re-arms itself.
+         * when the service starts, so a schedule lost to a reinstall re-arms itself and a daily run
+         * that drifted re-anchors to [startTime].
          *
-         * [enabled] and [minutes] default to the stored values but can be passed in from a settings
-         * listener, which fires before the new value is persisted.
+         * [enabled], [minutes] and [startTime] default to the stored values but can be passed in from
+         * a settings listener, which fires before the new value is persisted.
+         *
+         * ponytail: WorkManager only promises "not before" and restarts the period from the last run,
+         * so a run delayed by Doze pushes the next one back. Re-anchoring on service start bounds
+         * that drift; a self-rescheduling one-time chain would remove it, if it ever matters.
          */
         @JvmStatic
         @JvmOverloads
         fun reschedulePeriodic(
             context: Context,
             enabled: Boolean = GBApplication.getPrefs().getBoolean(GBPrefs.SELF_HOSTED_HEALTH_ENABLED, false),
-            minutes: Int = intervalMinutes(GBApplication.getPrefs())
+            minutes: Int = intervalMinutes(GBApplication.getPrefs()),
+            startTime: LocalTime = GBApplication.getPrefs()
+                .getLocalTime(GBPrefs.SELF_HOSTED_HEALTH_SYNC_TIME, DEFAULT_START_TIME)
         ) {
             val workManager = WorkManager.getInstance(context)
             if (!enabled || minutes <= 0) {
@@ -426,26 +435,38 @@ class SelfHostedHealthSyncWorker(
                 LOG.info("Self-hosted health periodic upload cancelled (enabled={}, minutes={})", enabled, minutes)
                 return
             }
+            val initialDelay = nextRunDelaySeconds(
+                startTime, minutes, ZonedDateTime.now(ZoneId.systemDefault())
+            )
             val request = PeriodicWorkRequest.Builder(
                 SelfHostedHealthSyncWorker::class.java, minutes.toLong(), TimeUnit.MINUTES
             )
+                .setInitialDelay(initialDelay, TimeUnit.SECONDS)
                 .addTag(WORK_TAG)
                 .setConstraints(
                     Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
                 )
                 .build()
             // UPDATE keeps the running schedule when nothing changed and only reshuffles when the
-            // interval actually moved, so reopening the screen does not restart the timer.
+            // interval or the start time actually moved, so reopening the screen does not restart
+            // the timer.
             workManager.enqueueUniquePeriodicWork(
                 PERIODIC_WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, request
             )
-            LOG.info("Self-hosted health periodic upload scheduled every {} minute(s)", minutes)
+            LOG.info(
+                "Self-hosted health periodic upload scheduled every {} minute(s), first run at {}",
+                minutes, startTime
+            )
         }
 
         /** Stored cadence in minutes; 30 by default, so a missed on-event upload still gets a retry.
          *  0 means the user turned the periodic safety net off. */
         private fun intervalMinutes(prefs: GBPrefs): Int =
             prefs.getString(GBPrefs.SELF_HOSTED_HEALTH_SYNC_INTERVAL, "30").orEmpty().toIntOrNull() ?: 0
+
+        /** Midnight keeps the pre-existing cadence shape: a sub-daily interval is unchanged by the
+         *  grid, and "once a day" uploads at the start of the day until a time is picked. */
+        const val DEFAULT_START_TIME = "00:00"
 
         /** Re-cover this much before the cursor, so data the band delivers late still gets sent. */
         private const val LOOK_BACK_SECONDS = 24L * 60L * 60L
@@ -459,4 +480,23 @@ class SelfHostedHealthSyncWorker(
 
         fun sleepCursorKey(address: String): String = "selfhosted_health_sleep_cursor_" + address.uppercase(Locale.ROOT)
     }
+}
+
+/**
+ * Seconds from [now] to the next [startTime] on a grid spaced [minutes] apart.
+ *
+ * Anchoring the whole grid, not just delaying the first run by one period, is what makes "once a day
+ * at 08:00" mean that, instead of 24 hours after whenever the app was last opened. For a sub-daily
+ * interval it reads as "every N, on the hour of the start time": a 6-hour interval anchored at 08:00
+ * runs at 08:00, 14:00, 20:00, 02:00.
+ */
+internal fun nextRunDelaySeconds(startTime: LocalTime, minutes: Int, now: ZonedDateTime): Long {
+    val anchor = now.with(startTime)
+    val next = if (anchor.isAfter(now)) {
+        anchor
+    } else {
+        val steps = Duration.between(anchor, now).toMinutes() / minutes + 1
+        anchor.plusMinutes(steps * minutes)
+    }
+    return Duration.between(now, next).seconds
 }

@@ -1,4 +1,4 @@
-# 健康数据 · Gadgetbridge fork
+# health band sync · Gadgetbridge fork
 
 这是 [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge)（AGPLv3）的一个个人 fork，
 在上游基础上做了进行了一些优化：
@@ -10,7 +10,7 @@
 - **Huawei 设备后台心率快同步**：设备初始化完成后定时拉取手表已经记录的历史心率，默认每 3 分钟一次，可选择关闭、1、3、5 或 10 分钟。
 - **同步后可以立即上传**：取数立即上传，也增加了分钟的层级选择，不用等原版的小时级周期任务
 - **内置免费天气**：可选启用 Open-Meteo 天气源，使用手机保存的位置获取当前天气、逐小时和 7 天预报，月相
-- **与官方版共存**：技术包名带独立后缀 `…gadgetbridge.toge`，桌面显示名「健康数据」，
+- **与官方版共存**：技术包名带独立后缀 `…gadgetbridge.toge`，桌面显示名「health band sync」，
   可与官方 Gadgetbridge 同时安装、互不影响。
 
 **完整安装与使用教程见 [docs/GUIDE.md](docs/GUIDE.md)。** fork 相对上游的改动清单和代码位置见 [docs/PATCHES.md](docs/PATCHES.md)。

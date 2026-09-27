@@ -54,7 +54,7 @@ Health Connect 不能直接读取华为手环。
 > 每个版本的 SHA-256 与最低 Android 版本见对应 release 说明。
 
 它是 [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge) 的修改版
-（AGPLv3，源码见文末）。桌面上显示为「健康数据」，包名带独立后缀，**跟官方版
+（AGPLv3，源码见文末）。桌面上显示为「health band sync」，包名带独立后缀，**跟官方版
 Gadgetbridge 可以共存**，装了不影响你原有的。
 
 如果你想自己修改或编译 App，构建方法放在文末的「自己构建」，需要 JDK 17 和 Android SDK 37。
@@ -99,7 +99,7 @@ changelog 里有 `Initial support for Huawei Band 10`。
 
 ### 2.3 配对
 
-在 Gadgetbridge（「健康数据」）里：
+在 Gadgetbridge（「health band sync」）里：
 
 1. 进「搜索设备」页面
 2. **长按**扫描到的手环
@@ -186,7 +186,7 @@ curl https://你的域名/healthz
 
 ## Step 4 · 把 App 连到你的服务器
 
-在「健康数据」里：**设置 → 外部集成 → 自托管健康同步**
+在「health band sync」里：**设置 → 外部集成 → 自托管健康同步**
 
 1. **服务器地址**：填域名就行，比如 `health.example.com`。`/api/health` 会自动补上，
    `https://` 也会自动补。填完那一行会显示补全后的完整地址，对一眼。
@@ -206,7 +206,11 @@ curl https://你的域名/healthz
 | `失败：HTTP 401`       | 令牌跟服务端的对不上       |
 | `失败：HTTP 404`       | 地址不对，或者服务没跑起来 |
 
-**「取数后立即上传」默认开着**，之后手环每次送来新数据都会自动上传。可选关闭或者自定义间隔
+**「取数后立即上传」默认开着**，之后手环每次送来新数据都会自动上传。可选关闭或者自定义间隔。
+
+**「周期上传」** 是取数触发之外的兜底，默认每 30 分钟一次。想每天固定时间上传，把它设成
+**每天一次**，再把下面的 **起始时间** 设成你要的点（比如 23:30）。起始时间同时也是其他间隔的
+对齐点：每 6 小时 + 起始时间 08:00 就是 08:00、14:00、20:00、02:00。
 
 > 令牌是明文存在 App 偏好里的，跟 Gadgetbridge 其他设置一样。共用设备上别用。
 
@@ -249,7 +253,7 @@ Health Connect 是安卓的系统级健康数据中枢，负责在 App 之间中
 
 本 fork 负责把华为手环的数据写进 Health Connect，Claude 再通过自己的 Health Connect 功能读取。两者不是同一个集成：本 fork 只是补上华为手环 → Health Connect 这一段
 
-在「健康数据」里：
+在「health band sync」里：
 
 - 设置 → 外部集成 → Health Connect → 启用
 - 设备选择里勾选你的手环

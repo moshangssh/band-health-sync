@@ -75,6 +75,13 @@
             app:iconSpaceReserved="true"
             app:useSimpleSummaryProvider="true" />
 
+        <nodomain.freeyourgadget.gadgetbridge.util.XTimePreference
+            android:defaultValue="00:00"
+            android:dependency="selfhosted_health_enabled"
+            android:icon="@drawable/ic_access_time"
+            android:key="selfhosted_health_sync_time"
+            android:title="@string/pref_selfhosted_health_sync_time_title" />
+
         <Preference
             android:icon="@drawable/ic_sync"
             android:key="selfhosted_health_sync_now"
@@ -100,10 +107,11 @@
             android:dialogTitle="@string/pref_selfhosted_health_device_selection"
             android:entries="@array/empty_array"
             android:entryValues="@array/empty_array"
+            android:icon="@drawable/ic_devices_wearables"
             android:key="selfhosted_health_devices_multiselect"
             android:summary="@string/pref_selfhosted_health_device_selection_summary"
             android:title="@string/pref_selfhosted_health_device_selection"
-            app:iconSpaceReserved="false" />
+            app:iconSpaceReserved="true" />
 
     </PreferenceCategory>
 

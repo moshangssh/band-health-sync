@@ -82,7 +82,7 @@
     <string name="pref_summary_notifications_pebblemsg">支持经由 PebbleKit 向 Pebble 应用发送通知。</string>
     <string name="pref_title_notifications_generic">通知使用权</string>
     <string name="pref_phone_alarm_band_link_title">手机闹钟同步到手环</string>
-    <string name="pref_phone_alarm_band_link_summary">手机闹钟正在响时提醒已连接的手环，停止或稍后提醒后移除。此在线联动需要“健康数据”和蓝牙连接保持运行。</string>
+    <string name="pref_phone_alarm_band_link_summary">手机闹钟正在响时提醒已连接的手环，停止或稍后提醒后移除。此在线联动需要“health band sync”和蓝牙连接保持运行。</string>
     <string name="pref_title_whenscreenon">即使屏幕开启时也通知</string>
     <string name="pref_title_notification_filter">勿扰模式</string>
     <string name="pref_summary_notification_filter">当在手机上启用勿扰模式时屏蔽所有通知</string>
@@ -4274,13 +4274,16 @@
     <string name="selfhosted_health_sync_interval_1h">每小时</string>
     <string name="selfhosted_health_sync_interval_3h">每 3 小时</string>
     <string name="selfhosted_health_sync_interval_6h">每 6 小时</string>
+    <string name="selfhosted_health_sync_interval_1d">每天一次</string>
+    <string name="pref_selfhosted_health_sync_time_title">起始时间</string>
     <string name="pref_selfhosted_health_sync_now_title">立即上传</string>
     <string name="pref_selfhosted_health_sync_now_summary">把还没上传的部分发一次</string>
     <string name="pref_selfhosted_health_reset_cursor_title">重置同步位置</string>
     <string name="pref_selfhosted_health_reset_cursor_summary">下次上传从初始同步日期重新开始。服务端是合并不是覆盖，重传是安全的。</string>
     <string name="pref_selfhosted_health_reset_cursor_done">同步位置已重置</string>
-    <string name="pref_selfhosted_health_device_selection">设备</string>
-    <string name="pref_selfhosted_health_device_selection_summary">只上传这些设备的数据</string>
+    <string name="pref_selfhosted_health_device_selection">选择要上传的设备</string>
+    <string name="pref_selfhosted_health_device_selection_summary">只上传选中的设备</string>
+    <string name="pref_selfhosted_health_device_selection_selected">已选择：%1$s</string>
     <string name="pref_selfhosted_health_notice">令牌和 Gadgetbridge 的其他偏好一样是明文保存的。共用设备上别用。</string>
     <string name="selfhosted_health_status_title">上次上传</string>
     <string name="selfhosted_health_status_success">%1$s · 已上传 %2$d 天</string>

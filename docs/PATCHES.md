@@ -8,7 +8,7 @@
 - 上游：`upstream/master` @ `a5013a932`
 - fork 分支：`master`
 - 技术包名：`nodomain.freeyourgadget.gadgetbridge.toge`
-- 桌面名称：`健康数据`
+- 桌面名称：`health band sync`
 - 当前设备：Huawei Band 10
 
 ## 已实现
@@ -19,7 +19,7 @@
 - 行为：
   - `applicationId` 使用 `nodomain.freeyourgadget.gadgetbridge.toge`；
   - Pebble ContentProvider authority 使用 `com.getpebble.android.provider.toge`；
-  - `app_name` 和启动 Activity label 都显示「健康数据」。
+  - `app_name` 和启动 Activity label 都显示「health band sync」。
 - 覆盖区：
   - `app/build.gradle`
   - `app/src/mainline/res/values/strings.xml`

@@ -37,13 +37,16 @@ import nodomain.freeyourgadget.gadgetbridge.activities.AbstractSettingsActivityV
 import nodomain.freeyourgadget.gadgetbridge.activities.selfhostedhealth.SelfHostedHealthLogActivity
 import nodomain.freeyourgadget.gadgetbridge.util.GB
 import nodomain.freeyourgadget.gadgetbridge.util.GBPrefs
+import nodomain.freeyourgadget.gadgetbridge.util.XTimePreference
 import nodomain.freeyourgadget.gadgetbridge.util.cycle.CycleContextStore
 import nodomain.freeyourgadget.gadgetbridge.util.cycle.CycleContextSyncWorker
 import nodomain.freeyourgadget.gadgetbridge.util.selfhostedhealth.SelfHostedHealthEndpoint
 import nodomain.freeyourgadget.gadgetbridge.util.selfhostedhealth.SelfHostedHealthSyncWorker
 import nodomain.freeyourgadget.gadgetbridge.util.selfhostedhealth.SelfHostedHealthUploader
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
+import java.util.Locale
 
 class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
     override fun newFragment(): PreferenceFragmentCompat = SelfHostedHealthPreferencesFragment()
@@ -60,6 +63,7 @@ class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
             setupUrl()
             setupToken()
             setupInterval()
+            setupSyncTime()
             setupDeviceSelection()
             setupActions()
         }
@@ -125,6 +129,20 @@ class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
         }
 
         /**
+         * Anchors the periodic upload to a clock time, which is what turns "once a day" into a real
+         * daily upload. Same shape as [setupInterval]: the choice lives in WorkManager, so it has to
+         * be turned into a (re)schedule here.
+         */
+        private fun setupSyncTime() {
+            findPreference<XTimePreference>(GBPrefs.SELF_HOSTED_HEALTH_SYNC_TIME)?.setOnPreferenceChangeListener { _, newValue ->
+                // XTimePreference always reports zero-padded "HH:mm", which is ISO_LOCAL_TIME.
+                val time = LocalTime.parse(newValue as String)
+                SelfHostedHealthSyncWorker.reschedulePeriodic(requireContext(), startTime = time)
+                true
+            }
+        }
+
+        /**
          * Typing just the domain is the obvious thing to do, so the bare origin is completed to the
          * ingest path rather than rejected. The summary then shows the completed address, which is
          * what makes the field explain itself instead of failing later with a 404.
@@ -179,6 +197,20 @@ class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
             val devices = GBApplication.app().deviceManager.devices
             devicesPref.entryValues = devices.map { it.address }.toTypedArray()
             devicesPref.entries = devices.map { it.aliasOrName }.toTypedArray()
+            // A fixed summary reads like a caption under the category title, so the row does not look
+            // like something that opens. Showing the current selection makes it a setting: empty
+            // says to pick one, picked lists the device names.
+            devicesPref.summaryProvider = Preference.SummaryProvider<MultiSelectListPreference> { preference ->
+                val selected = preference.values.map { it.uppercase(Locale.ROOT) }.toSet()
+                val names = devices
+                    .filter { it.address.uppercase(Locale.ROOT) in selected }
+                    .map { it.aliasOrName }
+                if (names.isEmpty()) {
+                    getString(R.string.pref_selfhosted_health_device_selection_summary)
+                } else {
+                    getString(R.string.pref_selfhosted_health_device_selection_selected, names.joinToString(", "))
+                }
+            }
         }
 
         private fun setupActions() {

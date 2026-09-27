@@ -140,6 +140,9 @@ public class GBPrefs extends Prefs {
     // Minutes between periodic uploads; "0" means the periodic safety net is off and only the
     // post-fetch trigger and the manual button remain.
     public static final String SELF_HOSTED_HEALTH_SYNC_INTERVAL = "selfhosted_health_sync_interval";
+    // "HH:mm": clock time the periodic upload is anchored to, so a daily interval lands on the same
+    // time every day instead of drifting from whenever the app was opened.
+    public static final String SELF_HOSTED_HEALTH_SYNC_TIME = "selfhosted_health_sync_time";
     public static final String SELF_HOSTED_HEALTH_SYNC_NOW = "selfhosted_health_sync_now";
     public static final String SELF_HOSTED_HEALTH_STATUS = "selfhosted_health_status";
     public static final String SELF_HOSTED_HEALTH_INITIAL_SYNC_TS = "selfhosted_health_initial_sync_ts";
