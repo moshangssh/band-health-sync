@@ -409,7 +409,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
     /*
      * For every activity sample, it adds the data into the following processed sample.
      * If there are multiple activity samples, the steps, calories, and distance is added together.
-     * For the SpO and HR only the last value is used.
+     * For the SpO, HR and resting HR only the last value is used.
      */
     private void overlayActivitySamples(List<HuaweiActivitySample> processedSamples, int timestamp_from, int timestamp_to) {
         List<HuaweiActivitySample> activitySamples = getRawOrderedActivitySamples(timestamp_from, timestamp_to);
@@ -424,6 +424,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
 
         int lastSpo = ActivitySample.NOT_MEASURED;
         int lastHr = ActivitySample.NOT_MEASURED;
+        int lastRestingHr = ActivitySample.NOT_MEASURED;
 
         int stateModifier = ActivitySample.NOT_MEASURED;
 
@@ -442,6 +443,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
                 processedSamples.get(currentIndex).setDistance(distanceCount);
                 processedSamples.get(currentIndex).setSpo(lastSpo);
                 processedSamples.get(currentIndex).setHeartRate(lastHr);
+                processedSamples.get(currentIndex).setRestingHeartRate(lastRestingHr);
                 processedSamples.get(currentIndex).setRawKind(stateModifier);
 
                 // Reset counters
@@ -451,6 +453,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
                 distanceCount = ActivitySample.NOT_MEASURED;
                 lastSpo = ActivitySample.NOT_MEASURED;
                 lastHr = ActivitySample.NOT_MEASURED;
+                lastRestingHr = ActivitySample.NOT_MEASURED;
 
                 currentIndex += 1;
                 if (currentIndex >= processedSamples.size())
@@ -484,6 +487,10 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
                 lastHr = activitySample.getHeartRate();
                 hasData = true;
             }
+            if (activitySample.getRestingHeartRate() != ActivitySample.NOT_MEASURED) {
+                lastRestingHr = activitySample.getRestingHeartRate();
+                hasData = true;
+            }
             if (activitySample.getRawKind() != ActivitySample.NOT_MEASURED) {
                 if (activitySample.getTimestamp() < activitySample.getOtherTimestamp()) {
                     // Starting of modifier
@@ -507,6 +514,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
         processedSamples.get(currentIndex).setDistance(distanceCount);
         processedSamples.get(currentIndex).setSpo(lastSpo);
         processedSamples.get(currentIndex).setHeartRate(lastHr);
+        processedSamples.get(currentIndex).setRestingHeartRate(lastRestingHr);
         processedSamples.get(currentIndex).setRawKind(stateModifier);
     }
 

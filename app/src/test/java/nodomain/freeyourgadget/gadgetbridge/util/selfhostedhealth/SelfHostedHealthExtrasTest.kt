@@ -62,6 +62,27 @@ class SelfHostedHealthExtrasTest {
     }
 
     @Test
+    fun `resting heart rate keeps only the last reading of each local day`() {
+        val extras = SelfHostedHealthExtras(
+            restingHeartRate = listOf(
+                point(ts(2026, 9, 2, 7, 0), "value" to 60),
+                point(ts(2026, 9, 2, 22, 0), "value" to 55),
+                point(ts(2026, 9, 3, 8, 0), "value" to 58)
+            )
+        )
+
+        val payload = SelfHostedHealthPayload.build(emptyList(), zone, 0L, ts(2026, 9, 3, 9, 0), extras)
+
+        val day2 = bodyFor(payload, "2026-09-02").getJSONArray("resting_heart_rate")
+        assertEquals(1, day2.length())
+        assertEquals(55, day2.getJSONObject(0).getInt("value"))
+
+        val day3 = bodyFor(payload, "2026-09-03").getJSONArray("resting_heart_rate")
+        assertEquals(1, day3.length())
+        assertEquals(58, day3.getJSONObject(0).getInt("value"))
+    }
+
+    @Test
     fun `calories and distance are summed per day`() {
         val extras = SelfHostedHealthExtras(
             activeCalories = listOf(

@@ -213,15 +213,22 @@ object SelfHostedHealthPayload {
             }
         }
 
+        // Resting heart rate is a daily figure: the band repeats the same value on every record of
+        // the day, so keep only the last reading per local day instead of one point per record.
+        val restingHeartRate = extras.restingHeartRate
+            .groupBy { localDate(it.timestamp / 1000L, zone) }
+            .values
+            .map { day -> day.maxBy { it.timestamp } }
+
         // Series keep every reading; the server dedups on the timestamp string. The day is the one
         // each reading's own timestamp falls in, except sleep statistics, which the caller anchors
-        // on the wakeup time so a night lands on the day it ended.
+        // on a wake-side time so a night lands on the day it ended.
         for ((key, points) in mapOf(
             "spo2" to extras.spo2,
             "stress" to extras.stress,
             "hrv" to extras.hrv,
             "temperature" to extras.temperature,
-            "resting_heart_rate" to extras.restingHeartRate,
+            "resting_heart_rate" to restingHeartRate,
             "sleep_stats" to extras.sleepStats,
             "emotions" to extras.emotions,
             "sleep_apnea" to extras.sleepApnea
