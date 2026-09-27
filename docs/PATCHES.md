@@ -163,12 +163,18 @@
   - 触发点复用 `ACTION_NEW_DATA` 与已有的 10 秒防抖（`NewDataReceiver`），不新增事件源；
   - 步数按本地日汇总为当日总数；心率按 5 分钟分桶取均值；睡眠按 `SleepAnalysis` 的
     session 归到醒来日，时长不计清醒阶段，与应用内、设备卡片、小组件一致；
+  - 除步数、心率、睡眠外，还上传手环记录的其余健康数据：血氧、压力、HRV、皮肤体温、静息
+    心率、活动卡路里、距离，以及华为专有的睡眠统计（睡眠分数、睡眠效率、呼吸率、血氧/心率
+    基线、RDI、醒来与翻身次数等）、情绪和睡眠呼吸暂停。前七项走 `DeviceCoordinator` 的
+    通用 provider，华为专有三项直接读对应表；各序列按本地日归属，卡路里与距离按日求和，
+    睡眠统计按醒来日归属；
   - 时间戳一律带时区偏移的 ISO 8601，服务端不需要猜时区；
   - 上传游标按设备存偏好；失败不推进游标，`Result.retry()` 走 WorkManager 自带退避。
   - 设置页可查看最近的上传日志、按结果筛选、查看完整 Payload 并复制；日志列表和详情页沿用
     应用原生主题文字色、点击反馈与分隔线，不额外引入红绿状态色、圆角卡片或胶囊标签。
-- 幂等边界：服务端是合并不是覆盖——步数取较大值、心率按时间戳去重、睡眠按时间跨度重叠
-  判断同一晚并保留更完整版本。fork 侧保留 24 小时回看窗口和睡眠上传游标；同一晚后续变长时，
+- 幂等边界：服务端是合并不是覆盖——步数、卡路里、距离取较大值，心率、血氧、压力、HRV、
+  体温、静息心率按时间戳去重（同一时间戳传新值即替换），睡眠按时间跨度重叠判断同一晚并保留
+  更完整版本，睡眠统计、情绪、睡眠呼吸暂停按时间戳整条替换。fork 侧保留 24 小时回看窗口和睡眠上传游标；同一晚后续变长时，
   新结束时间会越过旧游标并重传，由服务端替换较短版本，不会重复计入汇总。
 - 睡眠 session 只在「结束时间比我们手上最新样本早 10 分钟以上」时上传。这段等待只用于避免
   暂时展示仍在生长的半截睡眠，不再承担防重复职责；醒来后首次取得足够新的样本即可上传。
@@ -195,8 +201,9 @@
   - `app/src/main/res/values/strings.xml`
   - `app/src/main/res/values-zh-rCN/strings.xml`
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthPayloadTest.java`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthExtrasTest.kt`
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthLogTest.java`
-- 验证：`SelfHostedHealthPayloadTest` 10 项、`SelfHostedHealthLogTest` 5 项通过；
+- 验证：`SelfHostedHealthPayloadTest` 10 项、`SelfHostedHealthExtrasTest` 4 项、`SelfHostedHealthLogTest` 5 项通过；
   `assembleMainlineDebug` 通过，合并后的
   manifest 确认带 INTERNET 且注册了新 Activity；构建产出的真实 payload 用 Node 回放进
   `mcp/health-server.js` 的 `mergeHealthData`，落盘结果正确（步数合计、心率分桶、睡眠归到

@@ -37,6 +37,39 @@ data class SelfHostedHealthPayloadSet(
 )
 
 /**
+ * One reading outside the activity-sample stream, already shaped into its JSON fields.
+ *
+ * [timestamp] is epoch milliseconds, matching the sample providers that produce these; the builder
+ * only uses it to pick the local day, and writes it to the payload in [fields]'s sibling
+ * "timestamp" key as an ISO string.
+ */
+data class SelfHostedHealthPoint(val timestamp: Long, val fields: Map<String, Any?>)
+
+/**
+ * Everything the activity samples do not carry: SpO2, stress, HRV, skin temperature, resting heart
+ * rate, calories, distance, plus the Huawei-specific sleep statistics, emotions and sleep apnea.
+ *
+ * Kept as plain points so the wire format stays testable without constructing device samples.
+ */
+data class SelfHostedHealthExtras(
+    val spo2: List<SelfHostedHealthPoint> = emptyList(),
+    val stress: List<SelfHostedHealthPoint> = emptyList(),
+    val hrv: List<SelfHostedHealthPoint> = emptyList(),
+    val temperature: List<SelfHostedHealthPoint> = emptyList(),
+    val restingHeartRate: List<SelfHostedHealthPoint> = emptyList(),
+    val activeCalories: List<SelfHostedHealthPoint> = emptyList(),
+    val distance: List<SelfHostedHealthPoint> = emptyList(),
+    val sleepStats: List<SelfHostedHealthPoint> = emptyList(),
+    val emotions: List<SelfHostedHealthPoint> = emptyList(),
+    val sleepApnea: List<SelfHostedHealthPoint> = emptyList()
+) {
+    val isEmpty: Boolean
+        get() = spo2.isEmpty() && stress.isEmpty() && hrv.isEmpty() && temperature.isEmpty() &&
+                restingHeartRate.isEmpty() && activeCalories.isEmpty() && distance.isEmpty() &&
+                sleepStats.isEmpty() && emotions.isEmpty() && sleepApnea.isEmpty()
+}
+
+/**
  * Turns raw [ActivitySample]s into the JSON bodies the self-hosted health server ingests.
  *
  * Pure by design (no Android, no database, no network) so the wire format can be unit tested,
@@ -85,18 +118,26 @@ object SelfHostedHealthPayload {
      * @param sleepUploadedThrough epoch seconds of the newest sleep session already uploaded; only
      *   sessions ending after this are emitted.
      * @param nowEpochSecond wall clock, used together with the newest sample for the settle rule.
+     * @param extras readings that live outside the activity sample stream; when empty the payload
+     *   carries only steps, heart rate and sleep, exactly as before.
      */
     @JvmStatic
+    @JvmOverloads
     fun build(
         samples: List<ActivitySample>,
         zone: ZoneId,
         sleepUploadedThrough: Long,
-        nowEpochSecond: Long
+        nowEpochSecond: Long,
+        extras: SelfHostedHealthExtras = SelfHostedHealthExtras()
     ): SelfHostedHealthPayloadSet {
-        if (samples.isEmpty()) {
+        if (samples.isEmpty() && extras.isEmpty) {
             return SelfHostedHealthPayloadSet(emptyList(), 0L)
         }
         val sorted = samples.sortedBy { it.timestamp }
+
+        val bodies = LinkedHashMap<LocalDate, JSONObject>()
+        fun bodyFor(date: LocalDate): JSONObject =
+            bodies.getOrPut(date) { JSONObject().put("date", date.toString()) }
 
         val stepsByDate = LinkedHashMap<LocalDate, Long>()
         // date -> bucket start -> [bpm sum, sample count]
@@ -124,65 +165,93 @@ object SelfHostedHealthPayload {
             }
         }
 
+        for ((date, total) in stepsByDate) {
+            bodyFor(date).put("steps", JSONObject().put("total", total))
+        }
+        for ((date, buckets) in heartRateByDate) {
+            val array = JSONArray()
+            for ((bucketStart, accumulator) in buckets.entries.sortedBy { it.key }) {
+                array.put(
+                    JSONObject()
+                        .put("timestamp", formatTimestamp(bucketStart, zone))
+                        .put("value", Math.round(accumulator[0].toDouble() / accumulator[1]))
+                )
+            }
+            bodyFor(date).put("heart_rate", array)
+        }
+
         val sleepByDate = LinkedHashMap<LocalDate, MutableList<JSONObject>>()
         var newestSleepEnd = 0L
-        val dataHorizon = minOf(nowEpochSecond, sorted.last().timestamp.toLong()) - SLEEP_SETTLE_SECONDS
+        if (sorted.isNotEmpty()) {
+            val dataHorizon = minOf(nowEpochSecond, sorted.last().timestamp.toLong()) - SLEEP_SETTLE_SECONDS
 
-        for (session in SleepAnalysis().calculateSleepSessions(sorted)) {
-            val stages = buildStages(sorted, session)
-            if (stages.isEmpty()) {
-                continue
-            }
-            val start = stages.first().start
-            val end = stages.last().end
-            if (end > dataHorizon || end <= sleepUploadedThrough) {
-                continue
-            }
-            // Match the app's own convention (DailyTotals, widget, charts): the reported duration is
-            // time actually asleep, awake phases inside the session excluded.
-            val asleepSeconds = stages.filter { it.name != STAGE_AWAKE }.sumOf { it.end - it.start }
-            if (asleepSeconds <= 0) {
-                continue
-            }
-            sleepByDate
-                .getOrPut(localDate(end, zone)) { mutableListOf() }
-                .add(sessionJson(start, end, asleepSeconds, stages, zone))
-            if (end > newestSleepEnd) {
-                newestSleepEnd = end
-            }
-        }
-
-        val dates = sortedSetOf<LocalDate>().apply {
-            addAll(stepsByDate.keys)
-            addAll(heartRateByDate.keys)
-            addAll(sleepByDate.keys)
-        }
-
-        val days = dates.mapNotNull { date ->
-            val body = JSONObject()
-            body.put("date", date.toString())
-
-            stepsByDate[date]?.let { total ->
-                body.put("steps", JSONObject().put("total", total))
-            }
-            heartRateByDate[date]?.let { buckets ->
-                val array = JSONArray()
-                for ((bucketStart, accumulator) in buckets.entries.sortedBy { it.key }) {
-                    array.put(
-                        JSONObject()
-                            .put("timestamp", formatTimestamp(bucketStart, zone))
-                            .put("value", Math.round(accumulator[0].toDouble() / accumulator[1]))
-                    )
+            for (session in SleepAnalysis().calculateSleepSessions(sorted)) {
+                val stages = buildStages(sorted, session)
+                if (stages.isEmpty()) {
+                    continue
                 }
-                body.put("heart_rate", array)
+                val start = stages.first().start
+                val end = stages.last().end
+                if (end > dataHorizon || end <= sleepUploadedThrough) {
+                    continue
+                }
+                // Match the app's own convention (DailyTotals, widget, charts): the reported duration
+                // is time actually asleep, awake phases inside the session excluded.
+                val asleepSeconds = stages.filter { it.name != STAGE_AWAKE }.sumOf { it.end - it.start }
+                if (asleepSeconds <= 0) {
+                    continue
+                }
+                sleepByDate
+                    .getOrPut(localDate(end, zone)) { mutableListOf() }
+                    .add(sessionJson(start, end, asleepSeconds, stages, zone))
+                if (end > newestSleepEnd) {
+                    newestSleepEnd = end
+                }
             }
-            sleepByDate[date]?.let { sessions ->
-                body.put("sleep", JSONArray(sessions))
+            for ((date, sessions) in sleepByDate) {
+                bodyFor(date).put("sleep", JSONArray(sessions))
             }
-
-            // "date" alone carries no data and would still rewrite the server's file.
-            if (body.length() > 1) SelfHostedHealthDay(date.toString(), body) else null
         }
+
+        // Series keep every reading; the server dedups on the timestamp string. The day is the one
+        // each reading's own timestamp falls in, except sleep statistics, which the caller anchors
+        // on the wakeup time so a night lands on the day it ended.
+        for ((key, points) in mapOf(
+            "spo2" to extras.spo2,
+            "stress" to extras.stress,
+            "hrv" to extras.hrv,
+            "temperature" to extras.temperature,
+            "resting_heart_rate" to extras.restingHeartRate,
+            "sleep_stats" to extras.sleepStats,
+            "emotions" to extras.emotions,
+            "sleep_apnea" to extras.sleepApnea
+        )) {
+            if (points.isEmpty()) {
+                continue
+            }
+            for ((date, list) in points.groupBy { localDate(it.timestamp / 1000L, zone) }) {
+                bodyFor(date).put(key, pointArray(list, zone))
+            }
+        }
+
+        // Running totals, merged on the server by taking the larger value, exactly like steps.
+        for ((key, points) in mapOf(
+            "active_calories" to extras.activeCalories,
+            "distance" to extras.distance
+        )) {
+            if (points.isEmpty()) {
+                continue
+            }
+            for ((date, list) in points.groupBy { localDate(it.timestamp / 1000L, zone) }) {
+                val total = list.sumOf { (it.fields["value"] as? Number)?.toDouble() ?: 0.0 }
+                bodyFor(date).put(key, JSONObject().put("total", total))
+            }
+        }
+
+        // "date" alone carries no data and would still rewrite the server's file.
+        val days = bodies.values
+            .filter { it.length() > 1 }
+            .map { SelfHostedHealthDay(it.getString("date"), it) }
 
         return SelfHostedHealthPayloadSet(days, newestSleepEnd)
     }
@@ -256,6 +325,19 @@ object SelfHostedHealthPayload {
             .put("session_end_time", formatTimestamp(end, zone))
             .put("duration_seconds", asleepSeconds)
             .put("stages", stageArray)
+    }
+
+    /** One JSON object per reading: the ISO timestamp, then whatever fields the caller attached. */
+    private fun pointArray(points: List<SelfHostedHealthPoint>, zone: ZoneId): JSONArray {
+        val array = JSONArray()
+        for (point in points.sortedBy { it.timestamp }) {
+            val json = JSONObject().put("timestamp", formatTimestamp(point.timestamp / 1000L, zone))
+            for ((name, value) in point.fields) {
+                json.put(name, value)
+            }
+            array.put(json)
+        }
+        return array
     }
 
     private fun stageName(kind: ActivityKind): String? = when (kind) {

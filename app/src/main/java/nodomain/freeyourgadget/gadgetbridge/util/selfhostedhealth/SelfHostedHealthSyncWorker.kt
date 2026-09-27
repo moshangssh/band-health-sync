@@ -26,6 +26,12 @@ import androidx.work.Worker
 import androidx.work.WorkerParameters
 import nodomain.freeyourgadget.gadgetbridge.GBApplication
 import nodomain.freeyourgadget.gadgetbridge.R
+import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiEmotionsSampleProvider
+import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiSleepApneaSampleProvider
+import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiSleepStatsSampleProvider
+import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiActivitySample
+import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiSleepStatsSample
+import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiStressSample
 import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample
 import nodomain.freeyourgadget.gadgetbridge.util.GBPrefs
@@ -107,11 +113,11 @@ class SelfHostedHealthSyncWorker(
 
             // Reading and packaging share one guard: neither should be able to throw past doWork,
             // or WorkManager records a bare failure and this screen keeps showing the stale status.
-            val samples: List<ActivitySample>
+            val data: SelfHostedHealthData
             val payload: SelfHostedHealthPayloadSet
             try {
-                samples = readSamples(device, windowStart, now)
-                payload = SelfHostedHealthPayload.build(samples, zone, sleepCursor, now)
+                data = readHealthData(device, windowStart, now, zone)
+                payload = SelfHostedHealthPayload.build(data.samples, zone, sleepCursor, now, data.extras)
             } catch (e: Exception) {
                 LOG.error("Could not prepare self-hosted health payload for {}", address, e)
                 failure = e.message ?: e.javaClass.simpleName
@@ -121,7 +127,7 @@ class SelfHostedHealthSyncWorker(
 
             LOG.info(
                 "Self-hosted health sync for {}: {} sample(s) from {} produced {} day payload(s)",
-                address, samples.size, Instant.ofEpochSecond(windowStart), payload.days.size
+                address, data.samples.size, Instant.ofEpochSecond(windowStart), payload.days.size
             )
 
             var allSucceeded = true
@@ -190,14 +196,160 @@ class SelfHostedHealthSyncWorker(
             .toEpochSecond()
     }
 
-    private fun readSamples(device: GBDevice, fromTs: Long, toTs: Long): List<ActivitySample> {
+    /**
+     * Everything one device contributes to an upload: the activity samples (steps, heart rate,
+     * sleep stages), plus the readings that live in their own tables.
+     */
+    private class SelfHostedHealthData(
+        val samples: List<ActivitySample>,
+        val extras: SelfHostedHealthExtras
+    )
+
+    /**
+     * Reads the whole health record of one device in a single DB session.
+     *
+     * Activity samples are epoch-second; every [nodomain.freeyourgadget.gadgetbridge.model.TimeSample]
+     * provider is epoch-millisecond, which is what the Health Connect syncers use too.
+     *
+     * The SpO2, stress, HRV and temperature providers and the resting heart rate cover any device
+     * that exposes them; the sleep statistics, emotions and sleep apnea tables have no coordinator
+     * accessor, so they are read directly and simply come back empty on devices that never fill them.
+     */
+    private fun readHealthData(
+        device: GBDevice,
+        fromTs: Long,
+        toTs: Long,
+        zone: ZoneId
+    ): SelfHostedHealthData {
         return GBApplication.acquireDbReadOnly().use { db ->
-            val provider = device.deviceCoordinator.getSampleProvider(device, db.daoSession)
-                ?: return@use emptyList()
+            val session = db.daoSession
+            val coordinator = device.deviceCoordinator
+            val fromMs = fromTs * 1000L
+            val toMs = toTs * 1000L
+
+            val provider = coordinator.getSampleProvider(device, session)
+                ?: return@use SelfHostedHealthData(emptyList(), SelfHostedHealthExtras())
             @Suppress("UNCHECKED_CAST")
-            provider.getAllActivitySamples(fromTs.toInt(), toTs.toInt()) as List<ActivitySample>
+            val samples = provider
+                .getAllActivitySamples(fromTs.toInt(), toTs.toInt()) as List<ActivitySample>
+
+            val calories = mutableListOf<SelfHostedHealthPoint>()
+            val distance = mutableListOf<SelfHostedHealthPoint>()
+            val restingHeartRate = mutableListOf<SelfHostedHealthPoint>()
+            for (sample in samples) {
+                val timestamp = sample.timestamp.toLong() * 1000L
+                val kcal = sample.activeCalories
+                if (kcal > 0) {
+                    calories.add(SelfHostedHealthPoint(timestamp, mapOf("value" to kcal)))
+                }
+                val distanceCm = sample.distanceCm
+                if (distanceCm > 0) {
+                    distance.add(SelfHostedHealthPoint(timestamp, mapOf("value" to distanceCm / 100.0)))
+                }
+                if (sample is HuaweiActivitySample && sample.restingHeartRate > 0) {
+                    restingHeartRate.add(
+                        SelfHostedHealthPoint(timestamp, mapOf("value" to sample.restingHeartRate))
+                    )
+                }
+            }
+
+            SelfHostedHealthData(
+                samples = samples,
+                extras = SelfHostedHealthExtras(
+                    spo2 = coordinator.getSpo2SampleProvider(device, session)
+                        ?.getAllSamples(fromMs, toMs)
+                        ?.filter { it.spo2 > 0 }
+                        ?.map { SelfHostedHealthPoint(it.timestamp, mapOf("value" to it.spo2)) }
+                        .orEmpty(),
+                    stress = coordinator.getStressSampleProvider(device, session)
+                        ?.getAllSamples(fromMs, toMs)
+                        ?.filter { it.stress > 0 }
+                        ?.map { sample ->
+                            val fields = linkedMapOf<String, Any?>("value" to sample.stress)
+                            (sample as? HuaweiStressSample)?.let { fields["level"] = it.level }
+                            SelfHostedHealthPoint(sample.timestamp, fields)
+                        }
+                        .orEmpty(),
+                    hrv = coordinator.getHrvValueSampleProvider(device, session)
+                        ?.getAllSamples(fromMs, toMs)
+                        ?.filter { it.value > 0 }
+                        ?.map { SelfHostedHealthPoint(it.timestamp, mapOf("value" to it.value)) }
+                        .orEmpty(),
+                    temperature = coordinator.getTemperatureSampleProvider(device, session)
+                        ?.getAllSamples(fromMs, toMs)
+                        ?.map {
+                            SelfHostedHealthPoint(
+                                it.timestamp, mapOf("value" to it.temperature.toDouble())
+                            )
+                        }
+                        .orEmpty(),
+                    restingHeartRate = restingHeartRate,
+                    activeCalories = calories,
+                    distance = distance,
+                    sleepStats = HuaweiSleepStatsSampleProvider(device, session)
+                        .getSleepSamples(fromMs, toMs)
+                        .map { sleepStatsPoint(it, zone) },
+                    emotions = HuaweiEmotionsSampleProvider(device, session)
+                        .getAllSamples(fromMs, toMs)
+                        .map {
+                            SelfHostedHealthPoint(it.timestamp, linkedMapOf(
+                                "last_timestamp" to iso(it.lastTimestamp, zone),
+                                "status" to it.status,
+                                "origin_status" to it.originStatus,
+                                "valence" to it.valenceCharacter,
+                                "arousal" to it.arousalCharacter
+                            ))
+                        },
+                    sleepApnea = HuaweiSleepApneaSampleProvider(device, session)
+                        .getAllSamples(fromMs, toMs)
+                        .map {
+                            SelfHostedHealthPoint(it.timestamp, linkedMapOf(
+                                "last_timestamp" to iso(it.lastTimestamp, zone),
+                                "level" to it.level
+                            ))
+                        }
+                )
+            )
         }
     }
+
+    /** The Huawei per-night sleep report, anchored on the wakeup time so it lands on the wake day. */
+    private fun sleepStatsPoint(sample: HuaweiSleepStatsSample, zone: ZoneId): SelfHostedHealthPoint =
+        SelfHostedHealthPoint(
+            timestamp = sample.wakeupTime,
+            fields = linkedMapOf(
+                "sleep_score" to sample.sleepScore,
+                "bed_time" to iso(sample.bedTime, zone),
+                "rising_time" to iso(sample.risingTime, zone),
+                "wakeup_time" to iso(sample.wakeupTime, zone),
+                "sleep_efficiency" to sample.sleepEfficiency,
+                "sleep_latency" to sample.sleepLatency,
+                "deep_part" to sample.deepPart,
+                "snore_freq" to sample.snoreFreq,
+                "sleep_data_quality" to sample.sleepDataQuality,
+                "min_heart_rate" to sample.minHeartRate,
+                "max_heart_rate" to sample.maxHeartRate,
+                "avg_heart_rate" to sample.avgHeartRate,
+                "min_oxygen_saturation" to sample.minOxygenSaturation,
+                "max_oxygen_saturation" to sample.maxOxygenSaturation,
+                "avg_oxygen_saturation" to sample.avgOxygenSaturation,
+                "min_breath_rate" to sample.minBreathRate,
+                "max_breath_rate" to sample.maxBreathRate,
+                "avg_breath_rate" to sample.avgBreathRate,
+                "avg_hrv" to sample.avgHrv,
+                "hrv_day_to_baseline" to sample.hrvDayToBaseline,
+                "rdi" to sample.rdi,
+                "wake_count" to sample.wakeCount,
+                "turn_over_count" to sample.turnOverCount,
+                "wake_up_feeling" to sample.wakeUpFeeling,
+                "prepare_sleep_time" to sample.prepareSleepTime
+            )
+        )
+
+    private fun iso(epochMillis: Long, zone: ZoneId): String =
+        DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(
+            ZonedDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), zone)
+        )
 
     private fun selectedDevices(prefs: GBPrefs, requestedAddress: String?): List<GBDevice> {
         val selected = prefs.getStringSet(GBPrefs.SELF_HOSTED_HEALTH_DEVICE_SELECTION, emptySet())
@@ -240,11 +392,17 @@ class SelfHostedHealthSyncWorker(
         payload = prettyPayload(day.body)
     )
 
-    /** Steps count as one record; each heart-rate point and each sleep session counts on its own. */
+    /** Steps, calories and distance count as one record each; every series entry counts on its own. */
     private fun countRecords(body: JSONObject): Int {
-        var count = if (body.has("steps")) 1 else 0
-        count += body.optJSONArray("heart_rate")?.length() ?: 0
-        count += body.optJSONArray("sleep")?.length() ?: 0
+        var count = 0
+        for (key in TOTALS) {
+            if (body.has(key)) {
+                count++
+            }
+        }
+        for (key in SERIES) {
+            count += body.optJSONArray(key)?.length() ?: 0
+        }
         return count
     }
 
@@ -315,6 +473,15 @@ class SelfHostedHealthSyncWorker(
 
         /** Ceiling on a single run, so a stale cursor or a far-back start cannot read months at once. */
         private const val MAX_WINDOW_SECONDS = 31L * 24L * 60L * 60L
+
+        /** Payload keys that hold a single per-day total rather than a list of readings. */
+        private val TOTALS = listOf("steps", "active_calories", "distance")
+
+        /** Payload keys that hold a list of readings. */
+        private val SERIES = listOf(
+            "heart_rate", "sleep", "spo2", "stress", "hrv", "temperature",
+            "resting_heart_rate", "sleep_stats", "emotions", "sleep_apnea"
+        )
 
         private const val MAX_ATTEMPTS = 5
 

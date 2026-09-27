@@ -4258,7 +4258,7 @@
     <string name="health_connect_sleep_session_notes">来自 Gadgetbridge 设备的睡眠数据：%1$s。</string>
     <!-- 自托管健康同步（toge fork） -->
     <string name="selfhosted_health_settings">自托管健康同步</string>
-    <string name="selfhosted_health_settings_summary">把步数、心率和睡眠直接上传到你自己的服务器</string>
+    <string name="selfhosted_health_settings_summary">把步数、心率、睡眠、血氧、压力、HRV、体温等健康数据上传到你自己的服务器</string>
     <string name="pref_selfhosted_health_enabled">启用上传</string>
     <string name="pref_selfhosted_health_url_title">服务器地址</string>
     <string name="pref_selfhosted_health_url_summary">填域名就行，例如 health.example.com，/api/health 会自动补上</string>

@@ -5060,7 +5060,7 @@
     <string name="health_connect_sleep_session_notes">Sleep data from Gadgetbridge device: %1$s.</string>
     <!-- Self-hosted health sync (toge's fork) -->
     <string name="selfhosted_health_settings">Self-hosted health sync</string>
-    <string name="selfhosted_health_settings_summary">Send steps, heart rate and sleep to your own server</string>
+    <string name="selfhosted_health_settings_summary">Send steps, heart rate, sleep, SpO2, stress, HRV, temperature and more to your own server</string>
     <string name="pref_selfhosted_health_enabled">Enable upload</string>
     <string name="pref_selfhosted_health_url_title">Server address</string>
     <string name="pref_selfhosted_health_url_summary">Just the domain is enough, for example health.example.com — /api/health is filled in for you</string>
