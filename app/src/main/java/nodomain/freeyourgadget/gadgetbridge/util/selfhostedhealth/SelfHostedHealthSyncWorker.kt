@@ -30,7 +30,6 @@ import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiEmotionsSampleP
 import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiSleepApneaSampleProvider
 import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiSleepStatsSampleProvider
 import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiActivitySample
-import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiSleepStatsSample
 import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiStressSample
 import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample
@@ -312,44 +311,6 @@ class SelfHostedHealthSyncWorker(
             )
         }
     }
-
-    /** The Huawei per-night sleep report, anchored on the wakeup time so it lands on the wake day. */
-    private fun sleepStatsPoint(sample: HuaweiSleepStatsSample, zone: ZoneId): SelfHostedHealthPoint =
-        SelfHostedHealthPoint(
-            timestamp = sample.wakeupTime,
-            fields = linkedMapOf(
-                "sleep_score" to sample.sleepScore,
-                "bed_time" to iso(sample.bedTime, zone),
-                "rising_time" to iso(sample.risingTime, zone),
-                "wakeup_time" to iso(sample.wakeupTime, zone),
-                "sleep_efficiency" to sample.sleepEfficiency,
-                "sleep_latency" to sample.sleepLatency,
-                "deep_part" to sample.deepPart,
-                "snore_freq" to sample.snoreFreq,
-                "sleep_data_quality" to sample.sleepDataQuality,
-                "min_heart_rate" to sample.minHeartRate,
-                "max_heart_rate" to sample.maxHeartRate,
-                "avg_heart_rate" to sample.avgHeartRate,
-                "min_oxygen_saturation" to sample.minOxygenSaturation,
-                "max_oxygen_saturation" to sample.maxOxygenSaturation,
-                "avg_oxygen_saturation" to sample.avgOxygenSaturation,
-                "min_breath_rate" to sample.minBreathRate,
-                "max_breath_rate" to sample.maxBreathRate,
-                "avg_breath_rate" to sample.avgBreathRate,
-                "avg_hrv" to sample.avgHrv,
-                "hrv_day_to_baseline" to sample.hrvDayToBaseline,
-                "rdi" to sample.rdi,
-                "wake_count" to sample.wakeCount,
-                "turn_over_count" to sample.turnOverCount,
-                "wake_up_feeling" to sample.wakeUpFeeling,
-                "prepare_sleep_time" to sample.prepareSleepTime
-            )
-        )
-
-    private fun iso(epochMillis: Long, zone: ZoneId): String =
-        DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(
-            ZonedDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), zone)
-        )
 
     private fun selectedDevices(prefs: GBPrefs, requestedAddress: String?): List<GBDevice> {
         val selected = prefs.getStringSet(GBPrefs.SELF_HOSTED_HEALTH_DEVICE_SELECTION, emptySet())
