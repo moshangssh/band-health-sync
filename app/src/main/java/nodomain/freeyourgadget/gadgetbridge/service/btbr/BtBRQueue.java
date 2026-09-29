@@ -213,6 +213,10 @@ public final class BtBRQueue {
                         try {
                             if (!isConnected()) {
                                 LOG.debug("Not connected, updating device state to WAITING_FOR_RECONNECT");
+                                // WAITING_FOR_RECONNECT means there is no connection, so the socket must
+                                // not stay open: like in connect(), a leftover socket would block every
+                                // further connection attempt.
+                                cleanup();
                                 setDeviceConnectionState(GBDevice.State.WAITING_FOR_RECONNECT);
                                 return;
                             }
@@ -260,10 +264,14 @@ public final class BtBRQueue {
         if (state.equalsOrHigherThan(GBDevice.State.CONNECTING)) {
             LOG.warn("connect - ignored, state is {}", state);
             return false;
-        } else if (mBtSocket != null) {
-            LOG.warn("connect - ignored, mBtSocket isn't null");
-            return false;
-        } else if (mDisposed.get()) {
+        }
+        if (mBtSocket != null) {
+            // The device is not connected, so this is a leftover socket of a previous attempt that was
+            // never closed (a device support can put the device back to WAITING_FOR_RECONNECT without
+            // dropping the connection). Keeping it would make this and every further attempt a no-op.
+            cleanup();
+        }
+        if (mDisposed.get()) {
             LOG.error("connect - ignored, this BtBRQueue has already been disposed");
             return false;
         }
@@ -324,6 +332,16 @@ public final class BtBRQueue {
 
         mBtSocket = null;
         setDeviceConnectionState(GBDevice.State.NOT_CONNECTED);
+    }
+
+    /// Drops the socket and puts the device into {@link GBDevice.State#WAITING_FOR_RECONNECT}, so the
+    /// reconnect logic can pick it up again.
+    /// <p>
+    /// That state alone is not enough: it means "there is no connection". A socket which is still held
+    /// can never be gotten rid of afterwards, making every further connection attempt a no-op.
+    public void disconnectAndWaitForReconnect() {
+        cleanup();
+        setDeviceConnectionState(GBDevice.State.WAITING_FOR_RECONNECT);
     }
 
     /**

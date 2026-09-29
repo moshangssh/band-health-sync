@@ -319,6 +319,22 @@ public class TransactionBuilder {
         return add(action);
     }
 
+    /// Drops the connection and puts the device into {@link GBDevice.State#WAITING_FOR_RECONNECT}, so
+    /// the reconnect logic can pick it up again.
+    /// <p>
+    /// That state alone is not enough: it means "there is no connection". A connection which is still
+    /// held by the queue can never be gotten rid of afterwards, making every further reconnect attempt
+    /// a no-op.
+    ///
+    /// @see #setDeviceState(GBDevice.State)
+    @NonNull
+    public TransactionBuilder disconnectAndWaitForReconnect() {
+        return run(() -> {
+            mDeviceSupport.getQueue(mDeviceIdx).disconnect();
+            mDeviceSupport.getDevice().setUpdateState(GBDevice.State.WAITING_FOR_RECONNECT, mDeviceSupport.getContext());
+        });
+    }
+
     /// updates the progress bar
     ///
     /// @see SetProgressAction#SetProgressAction

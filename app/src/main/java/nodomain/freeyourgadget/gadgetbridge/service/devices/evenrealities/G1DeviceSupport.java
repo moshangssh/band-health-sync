@@ -210,7 +210,7 @@ public class G1DeviceSupport extends AbstractBTLEMultiDeviceSupport {
         if (rx == null || tx == null) {
             // If the characteristics are not received from the device reconnect and try again.
             LOG.warn("RX/TX characteristics are null, will attempt to reconnect");
-            builder.setDeviceState(GBDevice.State.WAITING_FOR_RECONNECT);
+            builder.disconnectAndWaitForReconnect();
             GB.toast(getContext(), "Failed to connect to Glasses, waiting for reconnect.",
                      Toast.LENGTH_LONG, GB.ERROR);
             return builder;

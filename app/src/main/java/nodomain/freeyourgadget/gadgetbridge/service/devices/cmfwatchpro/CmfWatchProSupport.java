@@ -145,28 +145,28 @@ public class CmfWatchProSupport extends AbstractBTLESingleDeviceSupport implemen
         final BluetoothGattCharacteristic btCharacteristicCommandRead = getCharacteristic(UUID_CHARACTERISTIC_CMF_COMMAND_READ);
         if (btCharacteristicCommandRead == null) {
             LOG.warn("Characteristic command read is null, will attempt to reconnect");
-            builder.setDeviceState(GBDevice.State.WAITING_FOR_RECONNECT);
+            builder.disconnectAndWaitForReconnect();
             return builder;
         }
 
         final BluetoothGattCharacteristic btCharacteristicCommandWrite = getCharacteristic(UUID_CHARACTERISTIC_CMF_COMMAND_WRITE);
         if (btCharacteristicCommandWrite == null) {
             LOG.warn("Characteristic command write is null, will attempt to reconnect");
-            builder.setDeviceState(GBDevice.State.WAITING_FOR_RECONNECT);
+            builder.disconnectAndWaitForReconnect();
             return builder;
         }
 
         final BluetoothGattCharacteristic btCharacteristicDataWrite = getCharacteristic(UUID_CHARACTERISTIC_CMF_DATA_WRITE);
         if (btCharacteristicDataWrite == null) {
             LOG.warn("Characteristic data write is null, will attempt to reconnect");
-            builder.setDeviceState(GBDevice.State.WAITING_FOR_RECONNECT);
+            builder.disconnectAndWaitForReconnect();
             return builder;
         }
 
         final BluetoothGattCharacteristic btCharacteristicDataRead = getCharacteristic(UUID_CHARACTERISTIC_CMF_DATA_READ);
         if (btCharacteristicDataRead == null) {
             LOG.warn("Characteristic data read is null, will attempt to reconnect");
-            builder.setDeviceState(GBDevice.State.WAITING_FOR_RECONNECT);
+            builder.disconnectAndWaitForReconnect();
             return builder;
         }
 
