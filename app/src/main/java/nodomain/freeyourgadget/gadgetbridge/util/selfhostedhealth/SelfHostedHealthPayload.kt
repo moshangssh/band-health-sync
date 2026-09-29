@@ -47,7 +47,8 @@ data class SelfHostedHealthPoint(val timestamp: Long, val fields: Map<String, An
 
 /**
  * Everything the activity samples do not carry: SpO2, stress, HRV, skin temperature, resting heart
- * rate, calories, distance, plus the Huawei-specific sleep statistics, emotions and sleep apnea.
+ * rate, calories, distance, recorded workouts, plus the Huawei-specific sleep statistics, emotions
+ * and sleep apnea.
  *
  * Kept as plain points so the wire format stays testable without constructing device samples.
  */
@@ -61,7 +62,8 @@ data class SelfHostedHealthExtras(
     val distance: List<SelfHostedHealthPoint> = emptyList(),
     val sleepStats: List<SelfHostedHealthPoint> = emptyList(),
     val emotions: List<SelfHostedHealthPoint> = emptyList(),
-    val sleepApnea: List<SelfHostedHealthPoint> = emptyList()
+    val sleepApnea: List<SelfHostedHealthPoint> = emptyList(),
+    val workouts: List<SelfHostedHealthPoint> = emptyList()
 )
 
 /**
@@ -70,19 +72,21 @@ data class SelfHostedHealthExtras(
  * Pure by design (no Android, no database, no network) so the wire format can be unit tested,
  * which is the only genuinely unknown part of the direct-upload path.
  *
- * The server merges rather than overwrites: steps take the larger value, heart rate dedups on the
- * exact timestamp string, and overlapping sleep sessions keep the most complete span. Re-sending
- * data is therefore safe, and this builder leans on that. The sleep cursor still avoids needless
- * repeats; if a later fetch grows a night beyond the cursor, the corrected span is sent and replaces
- * the shorter server copy (see the settle rule in [build]).
+ * The server merges rather than overwrites: steps and heart rate dedup on the exact timestamp
+ * string, and overlapping sleep sessions keep the most complete span. Re-sending data is therefore
+ * safe, and this builder leans on that. The sleep cursor still avoids needless repeats; if a later
+ * fetch grows a night beyond the cursor, the corrected span is sent and replaces the shorter server
+ * copy (see the settle rule in [build]).
  */
 object SelfHostedHealthPayload {
     /**
-     * Heart rate is downsampled into buckets of this size and averaged. The server keeps the last
-     * 288 samples of a day and drops the rest, so 5 minutes is exactly the resolution that fills a
-     * day without being truncated.
+     * Steps and heart rate are each downsampled into buckets of their own size, summed and averaged
+     * respectively. The band stores one sample a minute, and heart rate keeps that resolution,
+     * because a five-minute mean smooths away post-exercise peaks. Steps accumulate, so a coarser
+     * bucket serves them.
      */
-    const val HEART_RATE_BUCKET_SECONDS = 300L
+    const val STEPS_BUCKET_SECONDS = 5L * 60L
+    const val HEART_RATE_BUCKET_SECONDS = 60L
 
     /**
      * A sleep session is only uploaded once its end is this far behind the newest data we hold.
@@ -101,6 +105,7 @@ object SelfHostedHealthPayload {
     private const val STAGE_LIGHT = "light"
     private const val STAGE_REM = "rem"
     private const val STAGE_AWAKE = "awake"
+    private const val STAGE_NAP = "nap"
 
     private val TIMESTAMP_FORMAT: DateTimeFormatter = DateTimeFormatter.ISO_OFFSET_DATE_TIME
 
@@ -115,6 +120,11 @@ object SelfHostedHealthPayload {
      * @param nowEpochSecond wall clock, used together with the newest sample for the settle rule.
      * @param extras readings that live outside the activity sample stream; when empty the payload
      *   carries only steps, heart rate and sleep, exactly as before.
+     * @param napMinutes epoch seconds the watch itself tagged as a nap. The activity samples cannot
+     *   carry that: the device provider normalizes a nap to light sleep, so the caller reads the
+     *   watch's own stage rows and passes the minutes here. Empty means no nap was reported.
+     * @param profile the user's own body profile, or null when they have not filled one in. Not
+     *   day-scoped, so it rides along on each day body and the server keeps a single copy of it.
      */
     @JvmStatic
     @JvmOverloads
@@ -123,7 +133,9 @@ object SelfHostedHealthPayload {
         zone: ZoneId,
         sleepUploadedThrough: Long,
         nowEpochSecond: Long,
-        extras: SelfHostedHealthExtras = SelfHostedHealthExtras()
+        extras: SelfHostedHealthExtras = SelfHostedHealthExtras(),
+        napMinutes: Set<Long> = emptySet(),
+        profile: JSONObject? = null
     ): SelfHostedHealthPayloadSet {
         val sorted = samples.sortedBy { it.timestamp }
 
@@ -131,7 +143,8 @@ object SelfHostedHealthPayload {
         fun bodyFor(date: LocalDate): JSONObject =
             bodies.getOrPut(date) { JSONObject().put("date", date.toString()) }
 
-        val stepsByDate = LinkedHashMap<LocalDate, Long>()
+        // date -> bucket start -> steps counted inside that bucket
+        val stepsByDate = LinkedHashMap<LocalDate, LinkedHashMap<Long, Long>>()
         // date -> bucket start -> [bpm sum, sample count]
         val heartRateByDate = LinkedHashMap<LocalDate, LinkedHashMap<Long, IntArray>>()
 
@@ -141,14 +154,16 @@ object SelfHostedHealthPayload {
 
             val steps = sample.steps
             if (steps > 0) {
-                stepsByDate[date] = (stepsByDate[date] ?: 0L) + steps
+                val bucketStart = bucketStart(timestamp, STEPS_BUCKET_SECONDS)
+                val buckets = stepsByDate.getOrPut(date) { LinkedHashMap() }
+                buckets[bucketStart] = (buckets[bucketStart] ?: 0L) + steps
             }
 
             // Same validity rule the Health Connect path uses: 255 is Gadgetbridge's documented
             // "bad measurement" sentinel and 0 means "not measured".
             val bpm = sample.heartRate
             if (bpm in 1..300 && bpm != 255) {
-                val bucketStart = Math.floorDiv(timestamp, HEART_RATE_BUCKET_SECONDS) * HEART_RATE_BUCKET_SECONDS
+                val bucketStart = bucketStart(timestamp, HEART_RATE_BUCKET_SECONDS)
                 val accumulator = heartRateByDate
                     .getOrPut(date) { LinkedHashMap() }
                     .getOrPut(bucketStart) { IntArray(2) }
@@ -157,19 +172,14 @@ object SelfHostedHealthPayload {
             }
         }
 
-        for ((date, total) in stepsByDate) {
-            bodyFor(date).put("steps", JSONObject().put("total", total))
+        for ((date, buckets) in stepsByDate) {
+            bodyFor(date).put("steps", bucketSeries(buckets, zone))
         }
         for ((date, buckets) in heartRateByDate) {
-            val array = JSONArray()
-            for ((bucketStart, accumulator) in buckets.entries.sortedBy { it.key }) {
-                array.put(
-                    JSONObject()
-                        .put("timestamp", formatTimestamp(bucketStart, zone))
-                        .put("value", Math.round(accumulator[0].toDouble() / accumulator[1]))
-                )
+            val averages = buckets.mapValues { (_, accumulator) ->
+                Math.round(accumulator[0].toDouble() / accumulator[1])
             }
-            bodyFor(date).put("heart_rate", array)
+            bodyFor(date).put("heart_rate", bucketSeries(averages, zone))
         }
 
         val sleepByDate = LinkedHashMap<LocalDate, MutableList<JSONObject>>()
@@ -178,7 +188,7 @@ object SelfHostedHealthPayload {
             val dataHorizon = minOf(nowEpochSecond, sorted.last().timestamp.toLong()) - SLEEP_SETTLE_SECONDS
 
             for (session in SleepAnalysis().calculateSleepSessions(sorted)) {
-                val stages = buildStages(sorted, session)
+                val stages = buildStages(sorted, session, napMinutes)
                 if (stages.isEmpty()) {
                     continue
                 }
@@ -214,7 +224,8 @@ object SelfHostedHealthPayload {
 
         // Series keep every reading; the server dedups on the timestamp string. The day is the one
         // each reading's own timestamp falls in, except sleep statistics, which the caller anchors
-        // on a wake-side time so a night lands on the day it ended.
+        // on a wake-side time so a night lands on the day it ended, and workouts, which the caller
+        // anchors on the start so a workout running past midnight stays on the day it began.
         for ((key, points) in mapOf(
             "spo2" to extras.spo2,
             "stress" to extras.stress,
@@ -223,7 +234,8 @@ object SelfHostedHealthPayload {
             "resting_heart_rate" to restingHeartRate,
             "sleep_stats" to extras.sleepStats,
             "emotions" to extras.emotions,
-            "sleep_apnea" to extras.sleepApnea
+            "sleep_apnea" to extras.sleepApnea,
+            "workouts" to extras.workouts
         )) {
             if (points.isEmpty()) {
                 continue
@@ -247,6 +259,15 @@ object SelfHostedHealthPayload {
             }
         }
 
+        // Copied onto every day body rather than sent once: the day body is already the one
+        // authenticated channel, and the server hoists the profile into its own file, so repeating
+        // it here costs a few bytes and needs no second request, worker or trigger of its own.
+        if (profile != null && profile.length() > 0) {
+            for (body in bodies.values) {
+                body.put("profile", profile)
+            }
+        }
+
         // "date" alone carries no data and would still rewrite the server's file.
         val days = bodies.values
             .filter { it.length() > 1 }
@@ -262,7 +283,8 @@ object SelfHostedHealthPayload {
      */
     private fun buildStages(
         sortedSamples: List<ActivitySample>,
-        session: SleepAnalysis.SleepSession
+        session: SleepAnalysis.SleepSession,
+        napMinutes: Set<Long>
     ): List<Stage> {
         val sleepStart = session.sleepStart ?: return emptyList()
         val sleepEnd = session.sleepEnd ?: return emptyList()
@@ -277,14 +299,19 @@ object SelfHostedHealthPayload {
         val stages = mutableListOf<Stage>()
         var index = 0
         while (index < sessionSamples.size) {
-            val stageName = stageName(sessionSamples[index].kind)
+            val stageStart = sessionSamples[index].timestamp.toLong()
+            val stageName = stageName(sessionSamples[index].kind, stageStart, napMinutes)
             if (stageName == null) {
                 index++
                 continue
             }
-            val stageStart = sessionSamples[index].timestamp.toLong()
             var next = index + 1
-            while (next < sessionSamples.size && stageName(sessionSamples[next].kind) == stageName) {
+            while (next < sessionSamples.size && stageName(
+                    sessionSamples[next].kind,
+                    sessionSamples[next].timestamp.toLong(),
+                    napMinutes
+                ) == stageName
+            ) {
                 next++
             }
             // A stage runs until the next differing sample; the session's last stage is closed one
@@ -319,12 +346,43 @@ object SelfHostedHealthPayload {
                     .put("duration_seconds", stage.end - stage.start)
             )
         }
+        // Per-stage totals alongside the spans, summed from the same stages so the five always equal
+        // the spans in "stages" and deep + light + rem + nap equals "duration_seconds". A stage the
+        // night never entered is a real zero here: the watch classifies every minute it reports as
+        // sleep, so no minutes in a stage means none spent in it.
         return JSONObject()
             .put("session_start_time", formatTimestamp(start, zone))
             .put("session_end_time", formatTimestamp(end, zone))
             .put("duration_seconds", asleepSeconds)
+            .put("deep_seconds", secondsIn(stages, STAGE_DEEP))
+            .put("light_seconds", secondsIn(stages, STAGE_LIGHT))
+            .put("rem_seconds", secondsIn(stages, STAGE_REM))
+            .put("awake_seconds", secondsIn(stages, STAGE_AWAKE))
+            .put("nap_seconds", secondsIn(stages, STAGE_NAP))
             .put("stages", stageArray)
     }
+
+    /** Total of one stage's seconds, summed over its spans: a night enters a stage more than once. */
+    private fun secondsIn(stages: List<Stage>, name: String): Long =
+        stages.filter { it.name == name }.sumOf { it.end - it.start }
+
+    /** One `{timestamp, value}` per bucket, oldest first: the shape both steps and heart rate use. */
+    private fun bucketSeries(buckets: Map<Long, Long>, zone: ZoneId): JSONArray {
+        val array = JSONArray()
+        for ((bucketStart, value) in buckets.entries.sortedBy { it.key }) {
+            array.put(
+                JSONObject()
+                    .put("timestamp", formatTimestamp(bucketStart, zone))
+                    .put("value", value)
+            )
+        }
+        return array
+    }
+
+    /** Epoch-aligned bucket start. Every real zone offset is a whole number of 15 minutes, so a
+     *  local midnight always lands on a bucket edge for either bucket size. */
+    private fun bucketStart(epochSecond: Long, bucketSeconds: Long): Long =
+        Math.floorDiv(epochSecond, bucketSeconds) * bucketSeconds
 
     /** One JSON object per reading: the ISO timestamp, then whatever fields the caller attached. */
     private fun pointArray(points: List<SelfHostedHealthPoint>, zone: ZoneId): JSONArray {
@@ -339,7 +397,14 @@ object SelfHostedHealthPayload {
         return array
     }
 
-    private fun stageName(kind: ActivityKind): String? = when (kind) {
+    /**
+     * The stage a sample belongs to: a nap when the watch tagged that minute as one, else the stage
+     * its activity kind maps to. Null means the sample is not sleep at all.
+     */
+    private fun stageName(kind: ActivityKind, timestamp: Long, napMinutes: Set<Long>): String? =
+        if (timestamp in napMinutes) STAGE_NAP else activityStage(kind)
+
+    private fun activityStage(kind: ActivityKind): String? = when (kind) {
         ActivityKind.DEEP_SLEEP -> STAGE_DEEP
         ActivityKind.LIGHT_SLEEP -> STAGE_LIGHT
         ActivityKind.REM_SLEEP -> STAGE_REM

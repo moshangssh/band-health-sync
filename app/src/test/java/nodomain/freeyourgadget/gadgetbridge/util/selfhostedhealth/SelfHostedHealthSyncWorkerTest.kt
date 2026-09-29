@@ -28,6 +28,36 @@ class SelfHostedHealthSyncWorkerTest {
 
     private val zone = ZoneId.of("Europe/Berlin")
 
+    private val server = "http://192.168.31.245:47831/api/health"
+
+    @Test
+    fun `cursors recorded for this server are used as they are`() {
+        val cursors = uploadCursors(server, server, 1790600556L, 1790557741L)
+
+        assertEquals(1790600556L, cursors.cursor)
+        assertEquals(1790557741L, cursors.sleepCursor)
+        assertEquals(false, cursors.otherServer)
+    }
+
+    @Test
+    fun `a device moved to another server starts from nothing, so the window goes out again`() {
+        val cursors = uploadCursors("https://health.example.com/api/health", server, 1790600556L, 1790557741L)
+
+        assertEquals(0L, cursors.cursor)
+        assertEquals(0L, cursors.sleepCursor)
+        assertEquals(true, cursors.otherServer)
+    }
+
+    /** The pair stored before this rule ships carries no server, so the first run re-sends. */
+    @Test
+    fun `cursors with no server recorded start from nothing`() {
+        val cursors = uploadCursors(null, server, 1790600556L, 1790557741L)
+
+        assertEquals(0L, cursors.cursor)
+        assertEquals(0L, cursors.sleepCursor)
+        assertEquals(true, cursors.otherServer)
+    }
+
     @Test
     fun `a daily interval waits for tomorrow when the start time has passed`() {
         val now = ZonedDateTime.of(2026, 9, 27, 10, 0, 0, 0, zone)

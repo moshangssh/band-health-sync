@@ -48,6 +48,23 @@ class HuaweiSleepStatsPayloadTest {
         assertEquals("2026-09-01T22:30:00+08:00", point.fields["bed_time"])
     }
 
+    /**
+     * The watch's falling-asleep time is the row's own timestamp, which so far only acted as the day
+     * anchor; the field carries it so a reader does not have to infer it from bed_time.
+     */
+    @Test
+    fun `the reported falling-asleep time is a field of its own`() {
+        val sample = HuaweiSleepStatsSample()
+        sample.timestamp = ts(2026, 9, 1, 23, 12) * 1000L
+        sample.wakeupTime = ts(2026, 9, 2, 7, 0) * 1000L
+        sample.bedTime = ts(2026, 9, 1, 22, 40) * 1000L
+
+        val point = sleepStatsPoint(sample, zone)
+
+        assertEquals("2026-09-01T23:12:00+08:00", point.fields["fall_asleep_time"])
+        assertEquals(sample.wakeupTime, point.timestamp)
+    }
+
     @Test
     fun `a missing wakeup time falls back to the rising time`() {
         val sample = HuaweiSleepStatsSample()
@@ -88,7 +105,6 @@ class HuaweiSleepStatsPayloadTest {
         sample.wakeCount = 0
         sample.minHeartRate = -1
         sample.wakeUpFeeling = -1
-        sample.prepareSleepTime = -1L
 
         val point = sleepStatsPoint(sample, zone)
 
@@ -97,7 +113,43 @@ class HuaweiSleepStatsPayloadTest {
         assertEquals(0, point.fields["wake_count"])
         assertFalse(point.fields.containsKey("min_heart_rate"))
         assertFalse(point.fields.containsKey("wake_up_feeling"))
+    }
+
+    /**
+     * The watch's prepare-sleep number has no known unit — nothing in the app or the server reads
+     * it — so it stays out of the payload rather than going out as a bare, meaningless number.
+     */
+    @Test
+    fun `the prepare-sleep time is not sent, because its unit is unknown`() {
+        val sample = HuaweiSleepStatsSample()
+        sample.timestamp = ts(2026, 9, 1, 23, 0) * 1000L
+        sample.wakeupTime = ts(2026, 9, 2, 7, 0) * 1000L
+        sample.prepareSleepTime = 20L
+
+        val point = sleepStatsPoint(sample, zone)
+
         assertFalse(point.fields.containsKey("prepare_sleep_time"))
+    }
+
+    /** The watch's own baselines and how far tonight sat from them, with the unreported ones dropped. */
+    @Test
+    fun `baselines ride along and an unreported one is omitted`() {
+        val sample = HuaweiSleepStatsSample()
+        sample.timestamp = ts(2026, 9, 1, 23, 0) * 1000L
+        sample.wakeupTime = ts(2026, 9, 2, 7, 0) * 1000L
+        sample.minHeartRateBaseline = 52
+        sample.maxHeartRateBaseline = 88
+        sample.heartRateDayToBaseline = 3
+        sample.maxOxygenSaturationBaseline = -1
+        sample.sleepVersion = 2
+
+        val point = sleepStatsPoint(sample, zone)
+
+        assertEquals(52, point.fields["min_heart_rate_baseline"])
+        assertEquals(88, point.fields["max_heart_rate_baseline"])
+        assertEquals(3, point.fields["heart_rate_day_to_baseline"])
+        assertEquals(2, point.fields["sleep_version"])
+        assertFalse(point.fields.containsKey("max_oxygen_saturation_baseline"))
     }
 
     private fun assertNoSentinelDates(point: SelfHostedHealthPoint) {

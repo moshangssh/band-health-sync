@@ -125,6 +125,26 @@ class SelfHostedHealthExtrasTest {
         assertEquals(1, body.getJSONArray("sleep_apnea").length())
     }
 
+    /** A workout belongs to the day it began, even when it ran past midnight. */
+    @Test
+    fun `workouts are filed under the day they started`() {
+        val extras = SelfHostedHealthExtras(
+            workouts = listOf(
+                point(
+                    ts(2026, 9, 1, 23, 30),
+                    "activity" to "walking",
+                    "end_time" to "2026-09-02T00:10:00+08:00"
+                )
+            )
+        )
+
+        val payload = SelfHostedHealthPayload.build(emptyList(), zone, 0L, ts(2026, 9, 2, 10, 0), extras)
+
+        val workout = bodyFor(payload, "2026-09-01").getJSONArray("workouts").getJSONObject(0)
+        assertEquals("walking", workout.getString("activity"))
+        assertEquals("2026-09-01T23:30:00+08:00", workout.getString("timestamp"))
+    }
+
     @Test
     fun `extras alone still produce a day payload`() {
         val extras = SelfHostedHealthExtras(hrv = listOf(point(ts(2026, 9, 2, 9, 0), "value" to 42)))

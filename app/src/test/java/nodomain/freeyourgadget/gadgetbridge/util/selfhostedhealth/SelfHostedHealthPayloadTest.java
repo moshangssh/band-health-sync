@@ -13,7 +13,9 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import nodomain.freeyourgadget.gadgetbridge.devices.SampleProvider;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivityKind;
@@ -35,12 +37,14 @@ public class SelfHostedHealthPayloadTest {
         assertEquals(0L, payload.getSleepUploadedThrough());
     }
 
-    /** The server keeps the larger step total per day, so a day payload must carry the day total. */
+    /** Steps go up as a 5-minute series; the server sums the buckets it holds. */
     @Test
-    public void stepsAreTotalledPerLocalDay() throws Exception {
+    public void stepsAreSummedIntoFiveMinuteBuckets() throws Exception {
+        int bucketStart = ts(2026, 9, 1, 8, 0);
         List<ActivitySample> samples = Arrays.asList(
-                steps(ts(2026, 9, 1, 8, 0), 100),
-                steps(ts(2026, 9, 1, 20, 0), 250),
+                steps(bucketStart + 60, 100),
+                steps(bucketStart + 120, 40),
+                steps(bucketStart + 300, 250),
                 steps(ts(2026, 9, 2, 8, 0), 70)
         );
 
@@ -48,14 +52,68 @@ public class SelfHostedHealthPayloadTest {
                 SelfHostedHealthPayload.build(samples, ZONE, 0L, ts(2026, 9, 2, 9, 0));
 
         assertEquals(2, payload.getDays().size());
-        assertEquals("2026-09-01", payload.getDays().get(0).getDate());
-        assertEquals(350L, bodyFor(payload, "2026-09-01").getJSONObject("steps").getLong("total"));
-        assertEquals(70L, bodyFor(payload, "2026-09-02").getJSONObject("steps").getLong("total"));
+        JSONArray steps = bodyFor(payload, "2026-09-01").getJSONArray("steps");
+        assertEquals(2, steps.length());
+        assertEquals(140, steps.getJSONObject(0).getInt("value")); // 100 + 40
+        assertEquals("2026-09-01T08:00:00+08:00", steps.getJSONObject(0).getString("timestamp"));
+        assertEquals(250, steps.getJSONObject(1).getInt("value"));
+        assertEquals("2026-09-01T08:05:00+08:00", steps.getJSONObject(1).getString("timestamp"));
+        assertEquals(70, bodyFor(payload, "2026-09-02").getJSONArray("steps").getJSONObject(0).getInt("value"));
     }
 
-    /** The server keeps the last 288 heart rate samples of a day; 5-minute buckets fill a day exactly. */
+    /** A night that never entered a stage still reports it, as the zero it really is. */
     @Test
-    public void heartRateIsAveragedIntoFiveMinuteBuckets() throws Exception {
+    public void stagesTheNightNeverEnteredAreReportedAsZero() throws Exception {
+        List<ActivitySample> samples = Arrays.asList(
+                sleep(ts(2026, 9, 2, 0, 0), ActivityKind.LIGHT_SLEEP),
+                sleep(ts(2026, 9, 2, 1, 0), ActivityKind.LIGHT_SLEEP),
+                sleep(ts(2026, 9, 2, 2, 0), ActivityKind.LIGHT_SLEEP),
+                steps(ts(2026, 9, 2, 9, 0), 400)
+        );
+
+        SelfHostedHealthPayloadSet payload =
+                SelfHostedHealthPayload.build(samples, ZONE, 0L, ts(2026, 9, 2, 9, 5));
+
+        JSONObject session = bodyFor(payload, "2026-09-02").getJSONArray("sleep").getJSONObject(0);
+        assertEquals(7201L, session.getLong("light_seconds"));
+        assertEquals(0L, session.getLong("deep_seconds"));
+        assertEquals(0L, session.getLong("rem_seconds"));
+        assertEquals(0L, session.getLong("awake_seconds"));
+    }
+
+    /**
+     * A nap reaches the payload only through the watch's own tag: the activity samples carry it as
+     * light sleep, so without the tag list a midday nap would read as a night-time light stage.
+     */
+    @Test
+    public void minutesTheWatchTaggedAsANapBecomeTheirOwnStage() throws Exception {
+        List<ActivitySample> samples = Arrays.asList(
+                sleep(ts(2026, 9, 2, 13, 0), ActivityKind.LIGHT_SLEEP),
+                sleep(ts(2026, 9, 2, 13, 30), ActivityKind.LIGHT_SLEEP),
+                sleep(ts(2026, 9, 2, 14, 0), ActivityKind.LIGHT_SLEEP),
+                steps(ts(2026, 9, 2, 15, 0), 400)
+        );
+        Set<Long> napMinutes = new HashSet<>(Arrays.asList(
+                (long) ts(2026, 9, 2, 13, 0),
+                (long) ts(2026, 9, 2, 13, 30),
+                (long) ts(2026, 9, 2, 14, 0)
+        ));
+
+        SelfHostedHealthPayloadSet payload = SelfHostedHealthPayload.build(
+                samples, ZONE, 0L, ts(2026, 9, 2, 15, 5), new SelfHostedHealthExtras(), napMinutes);
+
+        JSONObject session = bodyFor(payload, "2026-09-02").getJSONArray("sleep").getJSONObject(0);
+        assertEquals("2026-09-02T13:00:00+08:00", session.getString("session_start_time"));
+        assertEquals("2026-09-02T14:00:01+08:00", session.getString("session_end_time"));
+        assertEquals("nap", session.getJSONArray("stages").getJSONObject(0).getString("stage"));
+        assertEquals(3601L, session.getLong("nap_seconds"));
+        assertEquals(3601L, session.getLong("duration_seconds"));
+        assertEquals(0L, session.getLong("light_seconds"));
+    }
+
+    /** Heart rate keeps the band's one-sample-a-minute resolution, so each bucket holds one reading. */
+    @Test
+    public void heartRateIsAveragedIntoOneMinuteBuckets() throws Exception {
         int bucketStart = ts(2026, 9, 2, 8, 0);
         List<ActivitySample> samples = Arrays.asList(
                 heartRate(bucketStart + 60, 60),
@@ -68,25 +126,32 @@ public class SelfHostedHealthPayloadTest {
                 SelfHostedHealthPayload.build(samples, ZONE, 0L, ts(2026, 9, 2, 9, 0));
 
         JSONArray heartRate = bodyFor(payload, "2026-09-02").getJSONArray("heart_rate");
-        assertEquals(2, heartRate.length());
-        assertEquals(64, heartRate.getJSONObject(0).getInt("value")); // (60 + 70 + 62) / 3
-        assertEquals("2026-09-02T08:00:00+08:00", heartRate.getJSONObject(0).getString("timestamp"));
-        assertEquals(90, heartRate.getJSONObject(1).getInt("value"));
-        assertEquals("2026-09-02T08:05:00+08:00", heartRate.getJSONObject(1).getString("timestamp"));
+        assertEquals(4, heartRate.length());
+        assertEquals(60, heartRate.getJSONObject(0).getInt("value"));
+        assertEquals("2026-09-02T08:01:00+08:00", heartRate.getJSONObject(0).getString("timestamp"));
+        assertEquals(70, heartRate.getJSONObject(1).getInt("value"));
+        assertEquals("2026-09-02T08:02:00+08:00", heartRate.getJSONObject(1).getString("timestamp"));
+        assertEquals(62, heartRate.getJSONObject(2).getInt("value"));
+        assertEquals("2026-09-02T08:03:00+08:00", heartRate.getJSONObject(2).getString("timestamp"));
+        assertEquals(90, heartRate.getJSONObject(3).getInt("value"));
+        assertEquals("2026-09-02T08:05:00+08:00", heartRate.getJSONObject(3).getString("timestamp"));
     }
 
+    /** A full day is one heart rate point per minute and one step bucket per five. */
     @Test
-    public void heartRateDoesNotExceedTheServerSampleCap() throws Exception {
+    public void aFullDayBucketsHeartRateByMinuteAndStepsByFive() throws Exception {
         List<ActivitySample> samples = new ArrayList<>();
         int dayStart = ts(2026, 9, 2, 0, 0);
         for (int minute = 0; minute < 24 * 60; minute++) {
-            samples.add(heartRate(dayStart + minute * 60, 60 + (minute % 20)));
+            samples.add(new MockSample(
+                    dayStart + minute * 60, ActivityKind.ACTIVITY, 10, 60 + (minute % 20)));
         }
 
         SelfHostedHealthPayloadSet payload =
                 SelfHostedHealthPayload.build(samples, ZONE, 0L, ts(2026, 9, 3, 1, 0));
 
-        assertEquals(288, bodyFor(payload, "2026-09-02").getJSONArray("heart_rate").length());
+        assertEquals(1440, bodyFor(payload, "2026-09-02").getJSONArray("heart_rate").length());
+        assertEquals(288, bodyFor(payload, "2026-09-02").getJSONArray("steps").length());
     }
 
     /** 0 means "not measured" and 255 is Gadgetbridge's bad-measurement sentinel; both would land
@@ -122,6 +187,11 @@ public class SelfHostedHealthPayloadTest {
         // light 1800 + deep 3600 + rem 1800 + trailing light 1801; the awake phase is excluded,
         // the same way the app's own totals treat it.
         assertEquals(9001L, session.getLong("duration_seconds"));
+        // The same night summed per stage: the two light spans add up over the awake phase between.
+        assertEquals(3600L, session.getLong("deep_seconds"));
+        assertEquals(3601L, session.getLong("light_seconds"));
+        assertEquals(1800L, session.getLong("rem_seconds"));
+        assertEquals(1800L, session.getLong("awake_seconds"));
         assertEquals(ts(2026, 9, 2, 2, 0) + 1, payload.getSleepUploadedThrough());
 
         JSONArray stages = session.getJSONArray("stages");

@@ -39,6 +39,9 @@ internal fun sleepStatsPoint(sample: HuaweiSleepStatsSample, zone: ZoneId): Self
         fields = fieldsOf(
             "sleep_score" to known(sample.sleepScore),
             "bed_time" to time(sample.bedTime, zone),
+            // The row's own timestamp is the watch's falling-asleep time; it is only the day anchor
+            // when neither end-of-night time was reported, so the field itself carries it here.
+            "fall_asleep_time" to time(sample.timestamp, zone),
             "rising_time" to time(sample.risingTime, zone),
             "wakeup_time" to time(sample.wakeupTime, zone),
             "sleep_efficiency" to known(sample.sleepEfficiency),
@@ -49,19 +52,34 @@ internal fun sleepStatsPoint(sample: HuaweiSleepStatsSample, zone: ZoneId): Self
             "min_heart_rate" to known(sample.minHeartRate),
             "max_heart_rate" to known(sample.maxHeartRate),
             "avg_heart_rate" to known(sample.avgHeartRate),
+            // The watch's own baseline for the same three metrics, plus how far tonight sat from it.
+            "min_heart_rate_baseline" to known(sample.minHeartRateBaseline),
+            "max_heart_rate_baseline" to known(sample.maxHeartRateBaseline),
+            "heart_rate_day_to_baseline" to known(sample.heartRateDayToBaseline),
             "min_oxygen_saturation" to known(sample.minOxygenSaturation),
             "max_oxygen_saturation" to known(sample.maxOxygenSaturation),
             "avg_oxygen_saturation" to known(sample.avgOxygenSaturation),
+            "min_oxygen_saturation_baseline" to known(sample.minOxygenSaturationBaseline),
+            "max_oxygen_saturation_baseline" to known(sample.maxOxygenSaturationBaseline),
+            "oxygen_saturation_day_to_baseline" to known(sample.oxygenSaturationDayToBaseline),
             "min_breath_rate" to known(sample.minBreathRate),
             "max_breath_rate" to known(sample.maxBreathRate),
             "avg_breath_rate" to known(sample.avgBreathRate),
+            "min_breath_rate_baseline" to known(sample.minBreathRateBaseline),
+            "max_breath_rate_baseline" to known(sample.maxBreathRateBaseline),
+            "breath_rate_day_to_baseline" to known(sample.breathRateDayToBaseline),
             "avg_hrv" to known(sample.avgHrv),
+            "min_hrv_baseline" to known(sample.minHrvBaseline),
+            "max_hrv_baseline" to known(sample.maxHrvBaseline),
             "hrv_day_to_baseline" to known(sample.hrvDayToBaseline),
             "rdi" to known(sample.rdi),
             "wake_count" to known(sample.wakeCount),
             "turn_over_count" to known(sample.turnOverCount),
             "wake_up_feeling" to known(sample.wakeUpFeeling),
-            "prepare_sleep_time" to known(sample.prepareSleepTime)
+            // prepareSleepTime is left out on purpose: nothing in the app or the server says what
+            // its unit is, and the watch's bare number would only invite a guess. Send it once a
+            // real value can be checked against the row's bed and falling-asleep times.
+            "sleep_version" to known(sample.sleepVersion)
         )
     )
 

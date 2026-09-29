@@ -161,20 +161,79 @@
   - 取数已经落进 Gadgetbridge 自己的库，直接读 `getSampleProvider().getAllActivitySamples()`
     与 `SleepAnalysis`，按天组装 JSON，OkHttp POST 到 `<服务器>/api/health`，带 Bearer token；
   - 触发点复用 `ACTION_NEW_DATA` 与已有的 10 秒防抖（`NewDataReceiver`），不新增事件源；
-  - 步数按本地日汇总为当日总数；心率按 5 分钟分桶取均值；睡眠按 `SleepAnalysis` 的
-    session 归到醒来日，时长不计清醒阶段，与应用内、设备卡片、小组件一致；
+  - 步数按 5 分钟分桶、心率按 1 分钟分桶，都按本地日归属——步数求和、心率取均值。手环每分钟存
+    一个样本，心率保持这个粒度，因为 5 分钟均值会把运动后的峰值抹平；步数是累加的，粗一点的桶
+    就够，一天最多 288 个步数桶、1440 个心率点。有条目的桶才发（步数 0 的桶、没测到心率的桶都不
+    发），所以一天睡掉的 8 小时不占点；当日步数总数由服务端对各桶
+    求和得出，不用另发一个总数；睡眠按 `SleepAnalysis` 的 session 归到醒来日，时长不计清醒
+    阶段，与应用内、设备卡片、小组件一致；每条 session 除 `stages` 明细外，另发五个阶段各自的
+    秒数——`deep_seconds`、`light_seconds`、`rem_seconds`、`awake_seconds`、`nap_seconds`，由同一批
+    阶段汇总而来，所以五项之和等于会期跨度、`deep_seconds + light_seconds + rem_seconds +
+    nap_seconds` 等于 `duration_seconds`；某阶段当晚没进入就发 0，因为手环把它上报的每一分钟睡眠
+    都归了类，没进入即真的没有；
+  - 白天小睡单独成一类阶段：手环自己的分期行里小睡是第 5 种 stage，而 `HuaweiSampleProvider`
+    把它归一成浅睡，activity sample 上再也看不出区别，所以读库时额外取一份「手环标为小睡的那些
+    分钟」，交给 payload 生成器把那些分钟命名为 `nap` 阶段（`nap_seconds` 随之单独统计，不再混进
+    `light_seconds`）。手环从不上报小睡时这份集合为空，行为与之前完全一致；
   - 除步数、心率、睡眠外，还上传手环记录的其余健康数据：血氧、压力、HRV、皮肤体温、静息
-    心率、活动卡路里、距离，以及华为专有的睡眠统计（睡眠分数、睡眠效率、呼吸率、血氧/心率
-    基线、RDI、醒来与翻身次数等）、情绪和睡眠呼吸暂停。前七项走 `DeviceCoordinator` 的
+    心率、活动卡路里、距离，以及华为专有的睡眠统计（睡眠分数、睡眠效率、呼吸率、血氧/心率、
+    RDI、醒来与翻身次数，以及上床 `bed_time`、入睡 `fall_asleep_time`、醒来 `wakeup_time` 与
+    起床 `rising_time` 四个时刻；`fall_asleep_time` 就是该行自己的时间戳，此前只用作归属日的
+    锚点兜底，现在单独发一个字段）、情绪和睡眠呼吸暂停。心率、呼吸率、血氧、HRV 四项各带
+    手环自己的基线：`min_*_baseline`、`max_*_baseline` 加上当晚相对基线的偏差
+    `*_day_to_baseline`，另有 `sleep_version`；手环没报的（-1 哨兵）照旧整个字段不发。
+    前七项走 `DeviceCoordinator` 的
     通用 provider，华为专有三项直接读对应表；各序列按本地日归属，卡路里与距离按日求和，
     静息心率取当日最后一条，睡眠统计按醒来日归属；
+  - 运动记录读设备解析器已经写好的 `BaseActivitySummary`，按 `startTime` 落在窗口内过滤，
+    归到**开始**那天（与睡眠的醒来日归属不同：跨午夜的运动算开始那天）。取 `summaryData`
+    里已经解析好的汇总：起止时间、时长、类型、名称，加上一张显式白名单里的指标——距离、卡路里、
+    步数、活动时长、平均/最大/最小心率、五个心率区间各自的秒数、配速、步频，以及 workout load、
+    有氧训练效果、恢复时间；
+  - 白名单不是照着 `ActivitySummaryEntries` 抄，而是照着**手环真的会报的字段**列的。手环只填
+    心率、速度、步频这几列逐秒样本，其余（步长、触地时间、摆动角、内外翻角、冲击、前后中掌落地、
+    SWOLF、划水频率、骑行功率、海拔、潜水各列）在它自己的记录里全是 `-1` 哨兵；跑姿/游泳/跳绳/
+    功率/海拔那一整片是给有对应传感器的表用的，列进去只会让服务端等一堆永远不来的字段。核对方式：
+    从手机上把应用数据库拉出来，看 `BASE_ACTIVITY_SUMMARY.SUMMARY_DATA` 与
+    `HUAWEI_WORKOUT_DATA_SAMPLE` 各列的实际取值（`HUAWEI_WORKOUT_SECTIONS_SAMPLE` 为空，
+    说明手环不下发分段数据）；
+  - 带单位写进字段名（`hr_zone_aerobic_seconds`、`recovery_time_hours`），助手读到的每个数字自己
+    说得清是什么。配速是**同一个键存不同单位**（陆上秒/公里、水里秒/100 米，差 10 倍），所以字段名
+    用行里实际存的单位结尾（`avg_pace_seconds_km` / `avg_pace_seconds_100m`），不猜。
+    手环没报的指标整个字段不发，不写 0——**心率区间除外**：手环对每次有心率的运动都会把五个区间
+    全报一遍，所以那里的 0 是"测到了，是 0 秒"，照发；区间整个不在行里才是"这次没有心率可分"。
+    **不含 GPS 轨迹和逐秒采样**：它们在单独的 raw details 文件里，要额外解析且量大，这一版不发。
+    非运动的时间跨度（`NOT_MEASURED`、`NOT_WORN`、睡眠）按 Health Connect 那条路同样的规则跳过。
+    读设备行用 `DBHelper.findDevice` 而不是 `getDevice`——后者会写入缺失的 device 行，而这里整个读
+    在只读 session 里；
+  - 服务端 `mcp/health-server.js` 的 `workoutEntry` 用同一张表，并把 `end` 一起给出（之前只给
+    `start`），落盘时本来就有 `end_time`，所以**服务器一升级，历史运动立刻有结束时间**；新增字段
+    只对升级之后新上传的运动才有。两边的字段名是同一张表，改一边要改另一边；
+  - 手环还会记**每公里分段**（`paces_table`），这一版不发：它是嵌套表，要新定一个载荷形状，
+    等有需要再说；
+  - 「关于你」里填的身高、体重、性别、生日也一起上传，年龄由生日现算。这些值不是按天的，
+    所以不新开端点、不加 worker、不加触发点：每份日 payload 捎带一份 `profile`，服务端收到后
+    提到独立的 `profile.json`，读取时挂在结果顶层，改资料下一次同步自动生效；
+  - profile 直读原始偏好，不走 `ActivityUser`——那个类在字段没填时会给 175cm / 70kg /
+    2000-01-01 / female 的默认值，照着传等于把编造的身体数据写进服务器。没填过的字段直接从
+    payload 里省掉，一项都没填就完全不传；
   - 时间戳一律带时区偏移的 ISO 8601，服务端不需要猜时区；
-  - 上传游标按设备存偏好；失败不推进游标，`Result.retry()` 走 WorkManager 自带退避。
+  - 上传游标按设备存偏好，并记下这两个游标是写给**哪台服务器**的（存 `normalize()` 之后的 URL，
+    同一地址的等价写法不会被当成另一台）；换服务器时按「没有游标」处理，即窗口内数据全量重发。
+    游标本来就是「这台设备的这些数据，发给 X 了吗」的答案，只存设备那一维的话，换服务器就会
+    把已经从旧服务器收到过的睡眠 session 静默扣下——睡眠游标是只进不退的，不像步数心率有
+    24 小时回看兜着。窗口下界不变，仍是 `SELF_HOSTED_HEALTH_INITIAL_SYNC_TS` 与「距今 31 天」
+    里较晚的那个，所以「全量」是窗口内全量，不是全部历史。这条规则上线后第一次同步必然是一次
+    全量重发（旧游标没有服务器记录），这是预期行为，没有额外迁移代码；失败不推进游标，
+    `Result.retry()` 走 WorkManager 自带退避。
   - 设置页可查看最近的上传日志、按结果筛选、查看完整 Payload 并复制；日志列表和详情页沿用
     应用原生主题文字色、点击反馈与分隔线，不额外引入红绿状态色、圆角卡片或胶囊标签。
-- 幂等边界：服务端是合并不是覆盖——步数、卡路里、距离取较大值，心率、血氧、压力、HRV、
+- 幂等边界：服务端是合并不是覆盖——卡路里、距离取较大值，步数按 5 分钟桶、心率按 1 分钟桶的
+  时间戳去重（同一时间戳传新值即替换；窗口始终从本地零点起，所以仍在长的最后一个桶下一轮会被
+  改写，当日总数随之重算），血氧、压力、HRV、
   体温、静息心率按时间戳去重（同一时间戳传新值即替换），睡眠按时间跨度重叠判断同一晚并保留
-  更完整版本，睡眠统计、情绪、睡眠呼吸暂停按时间戳整条替换。fork 侧保留 24 小时回看窗口和睡眠上传游标；同一晚后续变长时，
+  更完整版本，睡眠统计、情绪、睡眠呼吸暂停、运动记录按时间戳整条替换（运动记录以开始时间为
+  键，手环从不改开始时间，所以改过数据的同一次运动是覆盖而非并存）。fork 侧保留 24 小时回看窗口和睡眠上传游标；同一晚后续变长时，
   新结束时间会越过旧游标并重传，由服务端替换较短版本，不会重复计入汇总。
 - 睡眠 session 只在「结束时间比我们手上最新样本早 10 分钟以上」时上传。这段等待只用于避免
   暂时展示仍在生长的半截睡眠，不再承担防重复职责；醒来后首次取得足够新的样本即可上传。
@@ -185,6 +244,10 @@
   防火墙默认 BLOCK，不构成放宽）。
 - 覆盖区：
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthPayload.kt`
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiSleepStatsPayload.kt`
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/devices/huawei/HuaweiSampleProvider.java`（只加了睡眠 stage 编码的具名常量，并把 `toActivityKind` 里的字面量换成它们）
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthProfile.kt`
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthWorkout.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthUploader.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthSyncWorker.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/activities/preferences/SelfHostedHealthPreferencesActivity.kt`
@@ -202,13 +265,30 @@
   - `app/src/main/res/values-zh-rCN/strings.xml`
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthPayloadTest.java`
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthExtrasTest.kt`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthProfileTest.kt`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiSleepStatsPayloadTest.kt`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthWorkoutTest.kt`
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthLogTest.java`
-- 验证：`SelfHostedHealthPayloadTest` 10 项、`SelfHostedHealthExtrasTest` 4 项、`SelfHostedHealthLogTest` 5 项通过；
-  `assembleMainlineDebug` 通过，合并后的
+- 验证：`SelfHostedHealthPayloadTest` 12 项、`HuaweiSleepStatsPayloadTest` 7 项、`SelfHostedHealthExtrasTest` 7 项、`SelfHostedHealthSyncWorkerTest` 6 项、`SelfHostedHealthProfileTest` 3 项、
+  `SelfHostedHealthWorkoutTest` 7 项、`SelfHostedHealthLogTest` 6 项通过；服务端 `node --test`
+  26 项通过；`assembleMainlineDebug` 通过，合并后的
   manifest 确认带 INTERNET 且注册了新 Activity；构建产出的真实 payload 用 Node 回放进
-  `mcp/health-server.js` 的 `mergeHealthData`，落盘结果正确（步数合计、心率分桶、睡眠归到
-  醒来日、深/浅/REM 汇总非零），重复回放不产生重复记录。
+  `mcp/health-server.js` 的 `mergeHealthData`，落盘结果正确（步数按桶落盘、当日步数总数为各桶之和，
+  睡眠归到醒来日，深/浅/REM 汇总非零；**手环自己
+  那行 `SUMMARY_DATA`（室内步行，1221 秒）回放后读回**：起止时间、五个区间秒数（含 0 的极限区间）、
+  配速、步频、workout load、训练效果、恢复时间都在，手环没有的字段不出现），
+  重复回放不产生重复记录。这次回放用的是 5 分钟心率那版 payload；心率改为 1 分钟粒度后没有
+  再做整包回放，由两侧单测覆盖：fork 侧断言一天 1440 个心率点、288 个步数桶，服务端断言一天
+  1440 条心率读数完整落盘。
 - 限制：同步日志原生样式调整已覆盖安装并通过启动与数据保留验收，页面视觉仍待人工确认。
+- 限制：`prepare_sleep_time`（手环 dictId 700013821）**不发**。全仓库除了「存进列」和「发出去」
+  没有第三处碰过它，没有单位、没有消费者，看名字像「准备入睡」但无法从代码判断是分钟数还是
+  时刻；发一个没有单位的裸数字比不发更容易被误读。要启用就先拉一次手机数据库，看一夜的取值
+  量级（几百以内=分钟，1.7e12 量级=时间戳）并与同一行的 `BED_TIME`/`FALL_ASLEEP_TIME` 对照。
+- 限制：新增的睡眠统计基线列与小睡分类还没在实机上比对过。手环 11 是否真的会上报第 5 种
+  stage、那些 `*_baseline` 列是否真有非 -1 的值，要拉一次手机数据库核对
+  `HUAWEI_SLEEP_STATS_SAMPLE` 与 `HUAWEI_SLEEP_STAGE_SAMPLE` 才知道；两者都按哨兵规则处理，
+  真没数据时只是少几个字段（小睡则是整条路径静默不生效），不会传出假值。
 
 ### 连接时不下发未经用户设置的睡眠开关
 

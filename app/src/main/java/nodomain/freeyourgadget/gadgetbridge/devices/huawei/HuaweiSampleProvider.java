@@ -79,6 +79,17 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
         public static final int TRUSLEEP_NAP = 0x5659;
     }
 
+    /**
+     * The stage codes the watch reports in its own sleep stage rows, before this provider folds them
+     * into activity kinds. Public because a nap only exists here: {@link #normalizeType} turns it
+     * into light sleep, so a reader that needs to tell a nap from a night has to ask the rows.
+     */
+    public static final int SLEEP_STAGE_LIGHT = 1;
+    public static final int SLEEP_STAGE_REM = 2;
+    public static final int SLEEP_STAGE_DEEP = 3;
+    public static final int SLEEP_STAGE_AWAKE = 4;
+    public static final int SLEEP_STAGE_NAP = 5;
+
     public HuaweiSampleProvider(GBDevice device, DaoSession session) {
         super(device, session);
     }
@@ -626,11 +637,11 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
 
     private int toActivityKind(final HuaweiSleepStageSample stageSample) {
         return switch (stageSample.getStage()) {
-            case 1 -> RawTypes.LIGHT_SLEEP;
-            case 2 -> RawTypes.TRUSLEEP_REM;
-            case 3 -> RawTypes.DEEP_SLEEP;
-            case 4 -> RawTypes.TRUSLEEP_AWAKE;
-            case 5 -> RawTypes.TRUSLEEP_NAP;
+            case SLEEP_STAGE_LIGHT -> RawTypes.LIGHT_SLEEP;
+            case SLEEP_STAGE_REM -> RawTypes.TRUSLEEP_REM;
+            case SLEEP_STAGE_DEEP -> RawTypes.DEEP_SLEEP;
+            case SLEEP_STAGE_AWAKE -> RawTypes.TRUSLEEP_AWAKE;
+            case SLEEP_STAGE_NAP -> RawTypes.TRUSLEEP_NAP;
             default -> RawTypes.UNKNOWN;
         };
     }
