@@ -61,6 +61,11 @@ object SelfHostedHealthProfile {
     private fun positive(value: String?): Int? =
         value?.trim()?.toIntOrNull()?.takeIf { it > 0 }
 
+    /**
+     * A gender is only sent once the user actually picked one: the About-you ListPreference must not
+     * declare an android:defaultValue, or merely opening that screen persists a choice they never
+     * made and this reads it back as if it were theirs.
+     */
     private fun genderName(gender: String?): String? = when (gender?.trim()?.toIntOrNull()) {
         ActivityUser.GENDER_MALE -> "male"
         ActivityUser.GENDER_FEMALE -> "female"

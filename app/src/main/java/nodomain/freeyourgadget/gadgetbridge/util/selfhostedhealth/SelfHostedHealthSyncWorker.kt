@@ -104,7 +104,6 @@ class SelfHostedHealthSyncWorker(
 
         val zone = ZoneId.systemDefault()
         val now = System.currentTimeMillis() / 1000L
-        val profile = readProfile(prefs, zone)
         val uploader = SelfHostedHealthUploader()
         // "Upload now" sets this; event-driven and periodic runs leave it false.
         val manual = inputData.getBoolean(INPUT_MANUAL, false)
@@ -132,6 +131,7 @@ class SelfHostedHealthSyncWorker(
             val data: SelfHostedHealthData
             val payload: SelfHostedHealthPayloadSet
             try {
+                val profile = readProfile(prefs, zone)
                 data = readHealthData(device, windowStart, now, zone)
                 payload = SelfHostedHealthPayload.build(
                     data.samples, zone, sleepCursor, now, data.extras, data.napMinutes, profile
@@ -341,9 +341,10 @@ class SelfHostedHealthSyncWorker(
                     workouts = readWorkouts(device, session, fromMs, toMs, zone),
                     spo2 = coordinator.getSpo2SampleProvider(device, session)
                         ?.getAllSamples(fromMs, toMs)
-                        // SpO2 is a percentage: a raw signed byte can reach 101..127, which the
-                        // Health Connect syncer and the data exporter already reject.
-                        ?.filter { it.spo2 in 1..100 }
+                        // SpO2Sample reports 0 for "not measured", the same rule the charts read it
+                        // with; the interface promises no reading above 100, so nothing else is
+                        // second-guessed here.
+                        ?.filter { it.spo2 > 0 }
                         ?.map { SelfHostedHealthPoint(it.timestamp, mapOf("value" to it.spo2)) }
                         .orEmpty(),
                     stress = coordinator.getStressSampleProvider(device, session)
@@ -357,16 +358,16 @@ class SelfHostedHealthSyncWorker(
                         .orEmpty(),
                     hrv = coordinator.getHrvValueSampleProvider(device, session)
                         ?.getAllSamples(fromMs, toMs)
-                        // RMSSD in ms; the same plausible span the Health Connect syncer keeps.
-                        ?.filter { it.value in 1..200 }
+                        // RMSSD in ms: 0 is the parsers' "no measurement", and a trained user really
+                        // does reach values above 200 ms, so no ceiling is imposed here.
+                        ?.filter { it.value > 0 }
                         ?.map { SelfHostedHealthPoint(it.timestamp, mapOf("value" to it.value)) }
                         .orEmpty(),
                     temperature = coordinator.getTemperatureSampleProvider(device, session)
                         ?.getAllSamples(fromMs, toMs)
-                        // Celsius skin or body temperature; the same plausible span the Health
-                        // Connect syncer keeps. A sentinel (0, 255) or a negative raw byte is not
-                        // a reading, and a Float.NaN fails the range test on its own.
-                        ?.filter { it.temperature in 15.0f..45.0f }
+                        // Celsius, and not always body temperature: the provider may hold skin,
+                        // body or ambient readings and this reader does not look at the type, so
+                        // every stored reading goes out rather than a guessed human span.
                         ?.map {
                             SelfHostedHealthPoint(
                                 it.timestamp, mapOf("value" to it.temperature.toDouble())

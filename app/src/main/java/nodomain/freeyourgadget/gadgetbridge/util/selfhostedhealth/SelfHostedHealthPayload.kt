@@ -254,7 +254,7 @@ object SelfHostedHealthPayload {
                 continue
             }
             for ((date, list) in points.groupBy { localDate(it.timestamp / 1000L, zone) }) {
-                val total = list.sumOf { (it.fields["value"] as? Number)?.toDouble() ?: 0.0 }
+                val total = list.sumOf { (it.fields["value"] as Number).toDouble() }
                 bodyFor(date).put(key, JSONObject().put("total", total))
             }
         }

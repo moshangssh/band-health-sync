@@ -94,12 +94,13 @@ public class SelfHostedHealthLogTest {
 
     /**
      * Records are counted from the body's shape: each series array contributes one per reading, each
-     * per-day total contributes one, and the "date" label contributes nothing.
+     * per-day total contributes one, and the "date" label and the non-reading "profile" object
+     * contribute nothing.
      */
     @Test
     public void countRecordsCountsSeriesAndTotals() throws Exception {
         JSONObject body = new JSONObject(
-                "{\"date\":\"2026-09-03\",\"steps\":{\"total\":10},"
+                "{\"date\":\"2026-09-03\",\"profile\":{\"gender\":\"other\"},\"steps\":{\"total\":10},"
                         + "\"active_calories\":{\"total\":300},"
                         + "\"heart_rate\":[{},{}],\"sleep\":[{}],\"spo2\":[{}]}");
 
