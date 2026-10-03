@@ -140,12 +140,23 @@ class SelfHostedHealthSyncWorker(
         for (device in devices) {
             val address = device.address
             val deviceName = device.aliasOrName
+            val storedCursor = prefs.getLong(cursorKey(address), 0L)
+            val storedSleepCursor = prefs.getLong(sleepCursorKey(address), 0L)
             val cursors = uploadCursors(
                 prefs.getString(cursorTargetKey(address), null),
                 url,
-                prefs.getLong(cursorKey(address), 0L),
-                prefs.getLong(sleepCursorKey(address), 0L)
+                storedCursor,
+                storedSleepCursor,
+                now
             )
+            if (!cursors.otherServer &&
+                (cursors.cursor != storedCursor || cursors.sleepCursor != storedSleepCursor)
+            ) {
+                LOG.warn(
+                    "Stored cursors for {} are ahead of now ({} / {} vs {}); the clock moved back, so the last window is read again",
+                    address, storedCursor, storedSleepCursor, now
+                )
+            }
             val sleepCursor = cursors.sleepCursor
             val windowStart = uploadWindowStart(
                 cursors.cursor,
@@ -724,14 +735,21 @@ internal data class UploadCursors(
  * rule ships, where the stored pair carries no server at all — an old pair is a number this server
  * was never sent, and using it would strand the sleep sessions it covers. The window's lower bound
  * is unchanged either way: the initial-sync timestamp, floored at the 31-day look-back.
+ *
+ * A stored cursor is a past instant, because [nextUploadCursor] never writes one past `now`. A clock
+ * that ran ahead when it was written breaks that: once the clock is corrected the cursor sits in the
+ * future, [uploadWindowStart] opens a window there, the run reads nothing, and the cursor never moves
+ * again — the sync stops for good, silently. [now] is the horizon that pulls such a cursor back, which
+ * reads the last window again instead of none.
  */
 internal fun uploadCursors(
     storedTarget: String?,
     url: String,
     cursor: Long,
-    sleepCursor: Long
+    sleepCursor: Long,
+    now: Long
 ): UploadCursors = if (storedTarget == url) {
-    UploadCursors(cursor, sleepCursor, otherServer = false)
+    UploadCursors(minOf(cursor, now), minOf(sleepCursor, now), otherServer = false)
 } else {
     UploadCursors(0L, 0L, otherServer = true)
 }

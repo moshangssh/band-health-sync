@@ -306,11 +306,14 @@
 - 覆盖区：
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthPayload.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiSleepStatsPayload.kt`
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiBodyBatteryPayload.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/devices/huawei/HuaweiSampleProvider.java`（只加了睡眠 stage 编码的具名常量，并把 `toActivityKind` 里的字面量换成它们）
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthProfile.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthWorkout.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthUploader.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthSyncWorker.kt`
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthEndpoint.kt`
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthLog.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/activities/preferences/SelfHostedHealthPreferencesActivity.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/activities/selfhostedhealth/`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/externalevents/NewDataReceiver.java`
@@ -330,8 +333,14 @@
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiSleepStatsPayloadTest.kt`
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthWorkoutTest.kt`
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthLogTest.java`
-- 验证：`SelfHostedHealthPayloadTest` 12 项、`HuaweiSleepStatsPayloadTest` 7 项、`SelfHostedHealthExtrasTest` 7 项、`SelfHostedHealthSyncWorkerTest` 7 项、`SelfHostedHealthProfileTest` 3 项、
-  `SelfHostedHealthWorkoutTest` 7 项、`SelfHostedHealthLogTest` 6 项通过；服务端 `node --test`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthSyncWorkerTest.kt`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthEndpointTest.java`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiBodyBatteryPayloadTest.kt`
+- 验证：`selfhostedhealth` 包 84 项单测通过——`SelfHostedHealthSyncWorkerTest` 21 项、
+  `SelfHostedHealthEndpointTest` 14 项、`SelfHostedHealthPayloadTest` 13 项、
+  `SelfHostedHealthExtrasTest` 9 项、`HuaweiSleepStatsPayloadTest` 7 项、
+  `SelfHostedHealthWorkoutTest` 7 项、`SelfHostedHealthLogTest` 6 项、
+  `HuaweiBodyBatteryPayloadTest` 4 项、`SelfHostedHealthProfileTest` 3 项；服务端 `node --test`
   26 项通过；`assembleMainlineDebug` 通过，合并后的
   manifest 确认带 INTERNET 且注册了新 Activity；构建产出的真实 payload 用 Node 回放进
   `mcp/health-server.js` 的 `mergeHealthData`，落盘结果正确（步数按桶落盘、当日步数总数为各桶之和，
@@ -350,6 +359,28 @@
   stage、那些 `*_baseline` 列是否真有非 -1 的值，要拉一次手机数据库核对
   `HUAWEI_SLEEP_STATS_SAMPLE` 与 `HUAWEI_SLEEP_STAGE_SAMPLE` 才知道；两者都按哨兵规则处理，
   真没数据时只是少几个字段（小睡则是整条路径静默不生效），不会传出假值。
+
+### 时钟回拨后自托管同步不再永久停发
+
+- 目的：同步游标存的是「设备已经交给服务器的最后一个时刻」，写入侧 `nextUploadCursor` 用
+  `minOf(now, …)` 封顶，所以正常路径上它不可能超过 `now`。但时钟快过的时候（NTP 校正、手动
+  改时间、从更晚的备份恢复）写下的游标，会在时钟被纠正后落在未来：`uploadWindowStart` 开出的
+  窗口整体在未来，什么都读不到；游标又因为「这一趟没读到数据」而永不前进。此后每一趟都重复
+  同样的空转——没有报错，设置页一直显示上一次的成功状态。
+- 行为：
+  - 读游标时以 `now` 为上界，主游标与睡眠游标一起钳。睡眠游标是同一个暴露面：它被当作「已上传
+    到此为止」喂给 payload，跑到未来会让那一晚的睡眠被判为已发送，同样静默不发；
+  - 钳位放在读取处而不是 `nextUploadCursor`：被钳的那一趟，窗口就恢复成 `[now-24h, now]`，最近
+    一天当趟补发。只改 `nextUploadCursor` 的话那趟仍读到空，却会把游标写成 `now`——等于声称
+    交付了没交付的东西，还要多跑一轮才恢复；
+  - 真的钳到时打一行 warn，带上原值与 `now`，不做静默兜底。换服务器（`otherServer`）是正常
+    路径，不告警；
+  - 正常路径上 `cursor <= now`，`minOf` 返回原值，行为与改动前逐字一致。
+- 覆盖区：`util/selfhostedhealth/SelfHostedHealthSyncWorker.kt`
+- 验证：`SelfHostedHealthSyncWorkerTest` 新增「stored cursors ahead of the clock are pulled back
+  to now」；`selfhostedhealth` 包 84 项单测通过。
+- 限制：被未来游标跨过、且超过 24 小时的数据仍然找不回来。回到 `initialSyncTs` 重扫最多 31 天
+  代价更大，不做；这一条只把「永远卡死」换成「恢复最近一天」。
 
 ### 连接时不下发未经用户设置的睡眠开关
 

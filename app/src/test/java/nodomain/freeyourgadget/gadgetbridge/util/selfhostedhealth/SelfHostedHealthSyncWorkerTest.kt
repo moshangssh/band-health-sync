@@ -34,16 +34,27 @@ class SelfHostedHealthSyncWorkerTest {
 
     @Test
     fun `cursors recorded for this server are used as they are`() {
-        val cursors = uploadCursors(server, server, 1790600556L, 1790557741L)
+        val cursors = uploadCursors(server, server, 1790600556L, 1790557741L, 1790700000L)
 
         assertEquals(1790600556L, cursors.cursor)
         assertEquals(1790557741L, cursors.sleepCursor)
         assertEquals(false, cursors.otherServer)
     }
 
+    /** The clock ran ahead when these were written, so both sit past the corrected now. */
+    @Test
+    fun `stored cursors ahead of the clock are pulled back to now`() {
+        val now = 1790700000L
+
+        val cursors = uploadCursors(server, server, now + 100000L, now + 50000L, now)
+
+        assertEquals(now, cursors.cursor)
+        assertEquals(now, cursors.sleepCursor)
+    }
+
     @Test
     fun `a device moved to another server starts from nothing, so the window goes out again`() {
-        val cursors = uploadCursors("https://health.example.com/api/health", server, 1790600556L, 1790557741L)
+        val cursors = uploadCursors("https://health.example.com/api/health", server, 1790600556L, 1790557741L, 1790700000L)
 
         assertEquals(0L, cursors.cursor)
         assertEquals(0L, cursors.sleepCursor)
@@ -53,7 +64,7 @@ class SelfHostedHealthSyncWorkerTest {
     /** The pair stored before this rule ships carries no server, so the first run re-sends. */
     @Test
     fun `cursors with no server recorded start from nothing`() {
-        val cursors = uploadCursors(null, server, 1790600556L, 1790557741L)
+        val cursors = uploadCursors(null, server, 1790600556L, 1790557741L, 1790700000L)
 
         assertEquals(0L, cursors.cursor)
         assertEquals(0L, cursors.sleepCursor)
