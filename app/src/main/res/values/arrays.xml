@@ -28,6 +28,7 @@
         <item>@string/selfhosted_health_sync_interval_1h</item>
         <item>@string/selfhosted_health_sync_interval_3h</item>
         <item>@string/selfhosted_health_sync_interval_6h</item>
+        <item>@string/selfhosted_health_sync_interval_1d</item>
     </string-array>
     <string-array name="selfhosted_health_sync_interval_values">
         <item>0</item>
@@ -36,6 +37,7 @@
         <item>60</item>
         <item>180</item>
         <item>360</item>
+        <item>1440</item>
     </string-array>
 
     <string-array name="pref_theme_options">

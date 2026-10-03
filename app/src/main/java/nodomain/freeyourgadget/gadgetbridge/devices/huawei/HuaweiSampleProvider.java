@@ -79,6 +79,17 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
         public static final int TRUSLEEP_NAP = 0x5659;
     }
 
+    /**
+     * The stage codes the watch reports in its own sleep stage rows, before this provider folds them
+     * into activity kinds. Public because a nap only exists here: {@link #normalizeType} turns it
+     * into light sleep, so a reader that needs to tell a nap from a night has to ask the rows.
+     */
+    public static final int SLEEP_STAGE_LIGHT = 1;
+    public static final int SLEEP_STAGE_REM = 2;
+    public static final int SLEEP_STAGE_DEEP = 3;
+    public static final int SLEEP_STAGE_AWAKE = 4;
+    public static final int SLEEP_STAGE_NAP = 5;
+
     public HuaweiSampleProvider(GBDevice device, DaoSession session) {
         super(device, session);
     }
@@ -409,7 +420,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
     /*
      * For every activity sample, it adds the data into the following processed sample.
      * If there are multiple activity samples, the steps, calories, and distance is added together.
-     * For the SpO and HR only the last value is used.
+     * For the SpO, HR and resting HR only the last value is used.
      */
     private void overlayActivitySamples(List<HuaweiActivitySample> processedSamples, int timestamp_from, int timestamp_to) {
         List<HuaweiActivitySample> activitySamples = getRawOrderedActivitySamples(timestamp_from, timestamp_to);
@@ -424,6 +435,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
 
         int lastSpo = ActivitySample.NOT_MEASURED;
         int lastHr = ActivitySample.NOT_MEASURED;
+        int lastRestingHr = ActivitySample.NOT_MEASURED;
 
         int stateModifier = ActivitySample.NOT_MEASURED;
 
@@ -442,6 +454,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
                 processedSamples.get(currentIndex).setDistance(distanceCount);
                 processedSamples.get(currentIndex).setSpo(lastSpo);
                 processedSamples.get(currentIndex).setHeartRate(lastHr);
+                processedSamples.get(currentIndex).setRestingHeartRate(lastRestingHr);
                 processedSamples.get(currentIndex).setRawKind(stateModifier);
 
                 // Reset counters
@@ -451,6 +464,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
                 distanceCount = ActivitySample.NOT_MEASURED;
                 lastSpo = ActivitySample.NOT_MEASURED;
                 lastHr = ActivitySample.NOT_MEASURED;
+                lastRestingHr = ActivitySample.NOT_MEASURED;
 
                 currentIndex += 1;
                 if (currentIndex >= processedSamples.size())
@@ -484,6 +498,10 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
                 lastHr = activitySample.getHeartRate();
                 hasData = true;
             }
+            if (activitySample.getRestingHeartRate() != ActivitySample.NOT_MEASURED) {
+                lastRestingHr = activitySample.getRestingHeartRate();
+                hasData = true;
+            }
             if (activitySample.getRawKind() != ActivitySample.NOT_MEASURED) {
                 if (activitySample.getTimestamp() < activitySample.getOtherTimestamp()) {
                     // Starting of modifier
@@ -507,6 +525,7 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
         processedSamples.get(currentIndex).setDistance(distanceCount);
         processedSamples.get(currentIndex).setSpo(lastSpo);
         processedSamples.get(currentIndex).setHeartRate(lastHr);
+        processedSamples.get(currentIndex).setRestingHeartRate(lastRestingHr);
         processedSamples.get(currentIndex).setRawKind(stateModifier);
     }
 
@@ -618,11 +637,11 @@ public class HuaweiSampleProvider extends AbstractSampleProvider<HuaweiActivityS
 
     private int toActivityKind(final HuaweiSleepStageSample stageSample) {
         return switch (stageSample.getStage()) {
-            case 1 -> RawTypes.LIGHT_SLEEP;
-            case 2 -> RawTypes.TRUSLEEP_REM;
-            case 3 -> RawTypes.DEEP_SLEEP;
-            case 4 -> RawTypes.TRUSLEEP_AWAKE;
-            case 5 -> RawTypes.TRUSLEEP_NAP;
+            case SLEEP_STAGE_LIGHT -> RawTypes.LIGHT_SLEEP;
+            case SLEEP_STAGE_REM -> RawTypes.TRUSLEEP_REM;
+            case SLEEP_STAGE_DEEP -> RawTypes.DEEP_SLEEP;
+            case SLEEP_STAGE_AWAKE -> RawTypes.TRUSLEEP_AWAKE;
+            case SLEEP_STAGE_NAP -> RawTypes.TRUSLEEP_NAP;
             default -> RawTypes.UNKNOWN;
         };
     }

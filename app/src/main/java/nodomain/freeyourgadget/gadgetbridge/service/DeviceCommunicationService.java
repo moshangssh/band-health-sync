@@ -1508,9 +1508,9 @@ public class DeviceCommunicationService extends Service implements SharedPrefere
             if (mNewDataReceiver ==  null) {
                 mNewDataReceiver = new NewDataReceiver();
                 mNewDataReceiver.registerReceiver(this);
-                // Re-arm the periodic self-hosted health upload from the same lifecycle that arms the
+                // Re-arm the scheduled self-hosted health upload from the same lifecycle that arms the
                 // post-fetch trigger, so a schedule lost to a reinstall comes back on next service start.
-                SelfHostedHealthSyncWorker.reschedulePeriodic(this);
+                SelfHostedHealthSyncWorker.rescheduleNextRun(this);
                 // Keep the built-in weather source alive across app/service restarts.
                 BuiltinWeatherWorker.reschedule(this);
             }
@@ -1583,7 +1583,7 @@ public class DeviceCommunicationService extends Service implements SharedPrefere
             }
 
             if (features.supportsDataFetching() && mGBAutoFetchReceiver == null) {
-                mGBAutoFetchReceiver = new GBAutoFetchReceiver();
+                mGBAutoFetchReceiver = new GBAutoFetchReceiver(this);
                 ContextCompat.registerReceiver(this, mGBAutoFetchReceiver, new IntentFilter("android.intent.action.USER_PRESENT"), ContextCompat.RECEIVER_EXPORTED);
             }
         } else {
@@ -1651,6 +1651,7 @@ public class DeviceCommunicationService extends Service implements SharedPrefere
                 mOsmandAidlHelper = null;
             }
             if (mGBAutoFetchReceiver != null) {
+                mGBAutoFetchReceiver.destroy();
                 unregisterReceiver(mGBAutoFetchReceiver);
                 mGBAutoFetchReceiver = null;
             }

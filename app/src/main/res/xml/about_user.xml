@@ -20,7 +20,6 @@
 
         <ListPreference
             android:icon="@drawable/ic_wc"
-            android:defaultValue="2"
             android:entries="@array/gender"
             android:entryValues="@array/gender_values"
             android:key="activity_user_gender"

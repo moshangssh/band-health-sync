@@ -136,6 +136,10 @@ android {
         buildConfigField "String", "GIT_HASH_SHORT", "\"${getGitHashShort()}\""
         buildConfigField "String", "GIT_DIRTY_STATUS", "\"${getGitDirtyFlag()}\""
         buildConfigField "boolean", "INTERNET_ACCESS", "false"
+        buildConfigField "long", "SELF_HOSTED_HEALTH_STEPS_BUCKET_SECONDS", providers.gradleProperty("selfHostedHealthStepsBucketSeconds").get() + "L"
+        buildConfigField "long", "SELF_HOSTED_HEALTH_HEART_RATE_BUCKET_SECONDS", providers.gradleProperty("selfHostedHealthHeartRateBucketSeconds").get() + "L"
+        buildConfigField "long", "SELF_HOSTED_HEALTH_LOOK_BACK_SECONDS", providers.gradleProperty("selfHostedHealthLookBackSeconds").get() + "L"
+        buildConfigField "long", "SELF_HOSTED_HEALTH_MAX_WINDOW_SECONDS", providers.gradleProperty("selfHostedHealthMaxWindowSeconds").get() + "L"
 
         manifestPlaceholders = [
             appAuthRedirectScheme: "${applicationId}"

@@ -26,6 +26,7 @@ import androidx.preference.ListPreference
 import androidx.preference.MultiSelectListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
+import androidx.preference.SwitchPreferenceCompat
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
@@ -37,13 +38,16 @@ import nodomain.freeyourgadget.gadgetbridge.activities.AbstractSettingsActivityV
 import nodomain.freeyourgadget.gadgetbridge.activities.selfhostedhealth.SelfHostedHealthLogActivity
 import nodomain.freeyourgadget.gadgetbridge.util.GB
 import nodomain.freeyourgadget.gadgetbridge.util.GBPrefs
+import nodomain.freeyourgadget.gadgetbridge.util.XTimePreference
 import nodomain.freeyourgadget.gadgetbridge.util.cycle.CycleContextStore
 import nodomain.freeyourgadget.gadgetbridge.util.cycle.CycleContextSyncWorker
 import nodomain.freeyourgadget.gadgetbridge.util.selfhostedhealth.SelfHostedHealthEndpoint
 import nodomain.freeyourgadget.gadgetbridge.util.selfhostedhealth.SelfHostedHealthSyncWorker
 import nodomain.freeyourgadget.gadgetbridge.util.selfhostedhealth.SelfHostedHealthUploader
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
+import java.util.Locale
 
 class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
     override fun newFragment(): PreferenceFragmentCompat = SelfHostedHealthPreferencesFragment()
@@ -59,7 +63,9 @@ class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
             setupEnabledSwitch()
             setupUrl()
             setupToken()
+            setupUnlockSync()
             setupInterval()
+            setupSyncTime()
             setupDeviceSelection()
             setupActions()
         }
@@ -101,10 +107,10 @@ class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
                             .apply()
                     }
                 }
-                // Turning the feature off must also stop the periodic upload; turning it on re-arms
-                // it if an interval is set. The listener fires before the new value is persisted, so
-                // the fresh state is passed in explicitly.
-                SelfHostedHealthSyncWorker.reschedulePeriodic(requireContext(), enabled = enabling)
+                // Turning the feature off must also drop the armed upload; turning it on re-arms it
+                // if an interval is set. The listener fires before the new value is persisted, so the
+                // fresh state is passed in explicitly.
+                SelfHostedHealthSyncWorker.rescheduleNextRun(requireContext(), enabled = enabling)
                 if (enabling && CycleContextStore.isEnabled()) {
                     CycleContextSyncWorker.enqueue(requireContext())
                 }
@@ -113,13 +119,51 @@ class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
         }
 
         /**
-         * The periodic upload lives in WorkManager, not the preference store, so a cadence change has
-         * to be turned into a (re)schedule here. useSimpleSummaryProvider already shows the choice.
+         * Sync on unlock takes the cadence over instead of adding to it, so the two settings it
+         * replaces are shown as unavailable while it is on — left editable they would describe a grid
+         * nothing is armed on. Toggling it re-arms the run, since the point it is armed on changes
+         * with the switch. The listener fires before the value is persisted, hence the explicit flag.
+         */
+        private fun setupUnlockSync() {
+            val unlockPref = findPreference<SwitchPreferenceCompat>(GBPrefs.SELF_HOSTED_HEALTH_SYNC_ON_UNLOCK)
+                ?: return
+
+            fun showCadenceAsUnavailable(onUnlock: Boolean) {
+                findPreference<Preference>(GBPrefs.SELF_HOSTED_HEALTH_SYNC_INTERVAL)?.isEnabled = !onUnlock
+                findPreference<XTimePreference>(GBPrefs.SELF_HOSTED_HEALTH_SYNC_TIME)?.isEnabled = !onUnlock
+            }
+
+            showCadenceAsUnavailable(unlockPref.isChecked)
+            unlockPref.setOnPreferenceChangeListener { _, newValue ->
+                val onUnlock = newValue == true
+                showCadenceAsUnavailable(onUnlock)
+                SelfHostedHealthSyncWorker.rescheduleNextRun(requireContext(), onUnlock = onUnlock)
+                true
+            }
+        }
+
+        /**
+         * The armed upload lives in WorkManager, not the preference store, so a cadence change has to
+         * be turned into a (re)schedule here. useSimpleSummaryProvider already shows the choice.
          */
         private fun setupInterval() {
             findPreference<ListPreference>(GBPrefs.SELF_HOSTED_HEALTH_SYNC_INTERVAL)?.setOnPreferenceChangeListener { _, newValue ->
                 val minutes = (newValue as? String)?.toIntOrNull() ?: 0
-                SelfHostedHealthSyncWorker.reschedulePeriodic(requireContext(), minutes = minutes)
+                SelfHostedHealthSyncWorker.rescheduleNextRun(requireContext(), minutes = minutes)
+                true
+            }
+        }
+
+        /**
+         * Anchors the schedule to a clock time: the interval spaces the runs, this decides which
+         * clock times they land on. Same shape as [setupInterval]: the choice lives in WorkManager, so
+         * it has to be turned into a (re)schedule here.
+         */
+        private fun setupSyncTime() {
+            findPreference<XTimePreference>(GBPrefs.SELF_HOSTED_HEALTH_SYNC_TIME)?.setOnPreferenceChangeListener { _, newValue ->
+                // XTimePreference always reports zero-padded "HH:mm", which is ISO_LOCAL_TIME.
+                val time = LocalTime.parse(newValue as String)
+                SelfHostedHealthSyncWorker.rescheduleNextRun(requireContext(), startTime = time)
                 true
             }
         }
@@ -179,6 +223,20 @@ class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
             val devices = GBApplication.app().deviceManager.devices
             devicesPref.entryValues = devices.map { it.address }.toTypedArray()
             devicesPref.entries = devices.map { it.aliasOrName }.toTypedArray()
+            // A fixed summary reads like a caption under the category title, so the row does not look
+            // like something that opens. Showing the current selection makes it a setting: empty
+            // says to pick one, picked lists the device names.
+            devicesPref.summaryProvider = Preference.SummaryProvider<MultiSelectListPreference> { preference ->
+                val selected = preference.values.map { it.uppercase(Locale.ROOT) }.toSet()
+                val names = devices
+                    .filter { it.address.uppercase(Locale.ROOT) in selected }
+                    .map { it.aliasOrName }
+                if (names.isEmpty()) {
+                    getString(R.string.pref_selfhosted_health_device_selection_summary)
+                } else {
+                    getString(R.string.pref_selfhosted_health_device_selection_selected, names.joinToString(", "))
+                }
+            }
         }
 
         private fun setupActions() {
@@ -228,11 +286,17 @@ class SelfHostedHealthPreferencesActivity : AbstractSettingsActivityV2() {
             editor.apply()
         }
 
+        /**
+         * The result of the last run is the summary of "Upload now" rather than a row of its own: the
+         * row that produces the result is the one that should report it, and until something has run
+         * it keeps saying what it does.
+         */
         private fun updateStatusSummary() {
             val status = GBApplication.getPrefs().getString(GBPrefs.SELF_HOSTED_HEALTH_STATUS, "").orEmpty()
-            findPreference<Preference>(GBPrefs.SELF_HOSTED_HEALTH_STATUS)?.let { preference ->
-                preference.summary = status
-                preference.isVisible = status.isNotEmpty()
+            findPreference<Preference>(GBPrefs.SELF_HOSTED_HEALTH_SYNC_NOW)?.let { preference ->
+                preference.summary = status.ifEmpty {
+                    getString(R.string.pref_selfhosted_health_sync_now_summary)
+                }
             }
         }
 

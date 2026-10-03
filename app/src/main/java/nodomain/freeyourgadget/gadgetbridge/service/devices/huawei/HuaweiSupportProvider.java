@@ -496,7 +496,7 @@ public class HuaweiSupportProvider {
         final BluetoothGattCharacteristic characteristicRead = leSupport.getCharacteristic(HuaweiConstants.UUID_CHARACTERISTIC_HUAWEI_READ);
         if (characteristicRead == null) {
             LOG.warn("Read characteristic is null, will attempt to reconnect");
-            builder.setDeviceState(GBDevice.State.WAITING_FOR_RECONNECT);
+            builder.disconnectAndWaitForReconnect();
             return builder;
         }
         builder.notify(characteristicRead, true);
@@ -646,9 +646,12 @@ public class HuaweiSupportProvider {
         public void timeout(Request request) {
             LOG.error("Authentication timed out");
             GB.toast(context, R.string.authentication_failed_negotiation, Toast.LENGTH_LONG, GB.ERROR);
-            // Reconnect as no communication can succeed after this point
+            // Reconnect as no communication can succeed after this point.
+            // Dropping the connection is part of this: WAITING_FOR_RECONNECT means there is none, and a
+            // connection left open can never be gotten rid of afterwards, which blocks every reconnect.
             final GBDevice device = getDevice();
             if (device != null) {
+                leSupport.disconnect();
                 device.setUpdateState(GBDevice.State.WAITING_FOR_RECONNECT, getContext());
             }
         }

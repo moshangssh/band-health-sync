@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import org.json.JSONObject;
 import org.junit.Test;
 
 import java.util.Arrays;
@@ -89,5 +90,20 @@ public class SelfHostedHealthLogTest {
         assertTrue(SelfHostedHealthLog.deserialize(null).isEmpty());
         assertTrue(SelfHostedHealthLog.deserialize("").isEmpty());
         assertTrue(SelfHostedHealthLog.deserialize("not json at all").isEmpty());
+    }
+
+    /**
+     * Records are counted from the body's shape: each series array contributes one per reading, each
+     * per-day total contributes one, and the "date" label and the non-reading "profile" object
+     * contribute nothing.
+     */
+    @Test
+    public void countRecordsCountsSeriesAndTotals() throws Exception {
+        JSONObject body = new JSONObject(
+                "{\"date\":\"2026-09-03\",\"profile\":{\"gender\":\"other\"},\"steps\":{\"total\":10},"
+                        + "\"active_calories\":{\"total\":300},"
+                        + "\"heart_rate\":[{},{}],\"sleep\":[{}],\"spo2\":[{}]}");
+
+        assertEquals(6, SelfHostedHealthLog.countRecords(body));
     }
 }

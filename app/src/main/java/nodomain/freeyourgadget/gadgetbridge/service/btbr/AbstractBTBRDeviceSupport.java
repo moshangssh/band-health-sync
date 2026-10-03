@@ -188,14 +188,8 @@ public abstract class AbstractBTBRDeviceSupport extends AbstractDeviceSupport im
             initializeDevice(createTransactionBuilder("Initializing device")).queue();
         } catch (final Exception ex) {
             final GBDevice device = getDevice();
-
-            if (device != null) {
-                logger.error("Exception raised while initializing device {} (address {}), disconnecting", device.getName(), device.getAddress(), ex);
-                device.setState(GBDevice.State.WAITING_FOR_RECONNECT);
-                device.sendDeviceUpdateIntent(getContext());
-            } else {
-                logger.error("Exception raised while initializing unknown device", ex);
-            }
+            logger.error("Exception raised while initializing device {} (address {}), disconnecting", device.getName(), device.getAddress(), ex);
+            mQueue.disconnectAndWaitForReconnect();
         }
     }
 }

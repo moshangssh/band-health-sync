@@ -350,7 +350,7 @@ public class BangleJSDeviceSupport extends AbstractBTLESingleDeviceSupport {
             // https://codeberg.org/Freeyourgadget/Gadgetbridge/issues/2996 - sometimes we get
             // initializeDevice called but no characteristics have been fetched - try and reconnect in that case
             LOG.warn("RX/TX characteristics are null, will attempt to reconnect");
-            builder.setDeviceState(GBDevice.State.WAITING_FOR_RECONNECT);
+            builder.disconnectAndWaitForReconnect();
             return builder;
         }
         builder.setCallback(this);

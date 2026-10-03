@@ -24,10 +24,8 @@ import android.content.Intent;
 import android.content.IntentFilter;
 
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
-import androidx.work.Constraints;
 import androidx.work.Data;
 import androidx.work.ExistingWorkPolicy;
-import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkManager;
 
@@ -136,39 +134,20 @@ public class NewDataReceiver extends BroadcastReceiver {
         );
     }
 
+    /**
+     * Only the on-event switch is asked for here. New data arriving is not on its own a reason to
+     * upload: the band tops the database up on its own background sync every few minutes, so reading
+     * this as "something arrived" would upload all day. The unlock trigger uploads on its own behalf,
+     * from the fetch it asked for — this signal reaches every fetch alike and cannot tell them apart.
+     * The switch therefore defaults to off: with this band, "after each fetch" would mean every few
+     * minutes, not the sparse fetching the option was written for.
+     */
     private void scheduleSelfHostedHealthSync(Context context, GBPrefs prefs, String deviceAddress) {
         if (!prefs.getBoolean(GBPrefs.SELF_HOSTED_HEALTH_ENABLED, false)
-                || !prefs.getBoolean(GBPrefs.SELF_HOSTED_HEALTH_SYNC_ON_EVENT, true)) {
+                || !prefs.getBoolean(GBPrefs.SELF_HOSTED_HEALTH_SYNC_ON_EVENT, false)) {
             return;
         }
 
-        final Set<String> selected = prefs.getStringSet(GBPrefs.SELF_HOSTED_HEALTH_DEVICE_SELECTION, Collections.emptySet());
-        if (!selected.contains(deviceAddress.toUpperCase(Locale.ROOT))) {
-            LOG.debug("Ignoring new data for {} - not configured for self-hosted health sync", deviceAddress);
-            return;
-        }
-
-        String workName = SelfHostedHealthSyncWorker.WORK_TAG + "_" + deviceAddress;
-
-        OneTimeWorkRequest syncRequest = new OneTimeWorkRequest.Builder(SelfHostedHealthSyncWorker.class)
-            .addTag(SelfHostedHealthSyncWorker.WORK_TAG)
-            .setConstraints(new Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build())
-            .setInitialDelay(DEBOUNCE_SECONDS, TimeUnit.SECONDS)
-            .setInputData(
-                new Data.Builder()
-                    .putString(SelfHostedHealthSyncWorker.INPUT_DEVICE_ADDRESS, deviceAddress)
-                    .build()
-            )
-            .build();
-
-        LOG.debug("Scheduling self-hosted health upload for device: {} with work name: {}", deviceAddress, workName);
-
-        WorkManager.getInstance(context).enqueueUniqueWork(
-            workName,
-            ExistingWorkPolicy.REPLACE,
-            syncRequest
-        );
+        SelfHostedHealthSyncWorker.enqueueUpload(context, deviceAddress, DEBOUNCE_SECONDS);
     }
 }

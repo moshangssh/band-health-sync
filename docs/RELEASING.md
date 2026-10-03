@@ -14,7 +14,7 @@
 4. **发布**：
    ```bash
    gh release create vX.Y.Z --repo xiaoyou5602/band-health-sync \
-     --title "健康数据 vX.Y.Z" \
+     --title "health band sync vX.Y.Z" \
      --notes "APK SHA-256: …；签名指纹: a5c574ea…6f9aaf" \
      app/build/outputs/apk/mainline/release/app-mainline-release.apk
    ```

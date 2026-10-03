@@ -413,7 +413,7 @@ public abstract class HuamiSupport extends AbstractBTLESingleDeviceSupport
                     new InitOperation2021(authenticate, authFlags, cryptFlags, this, builder, characteristicChunked2021Write, huami2021ChunkedEncoder, huami2021ChunkedDecoder).perform();
                 } else {
                     LOG.warn("Chunked 2021 characteristics are null, will attempt to reconnect");
-                    builder.setDeviceState(State.WAITING_FOR_RECONNECT);
+                    builder.disconnectAndWaitForReconnect();
                 }
             } else {
                 new InitOperation(authenticate, authFlags, cryptFlags, this, builder).perform();

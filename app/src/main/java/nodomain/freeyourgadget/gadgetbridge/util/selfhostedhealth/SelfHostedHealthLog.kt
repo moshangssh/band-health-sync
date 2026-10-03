@@ -175,6 +175,30 @@ object SelfHostedHealthLog {
             entry.copy(payload = entry.payload.take(MAX_PAYLOAD_CHARS) + "\n…")
         }
 
+    /**
+     * Data records in one day's payload: each series array counts one per reading, each per-day
+     * total object counts once, and the "date" label and the "profile" object count for nothing.
+     *
+     * Counted from the body's own shape rather than a list of key names, so a new series or total
+     * is counted without touching this function.
+     */
+    @JvmStatic
+    fun countRecords(body: JSONObject): Int {
+        var count = 0
+        val keys = body.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            when (val value = body.get(key)) {
+                is JSONArray -> count += value.length()
+                // "profile" is the one object that is not a reading: the server hoists it into its
+                // own file and the builder repeats it on every day body, so counting it would
+                // report one more record than the day carried.
+                is JSONObject -> if (key != "profile") count++
+            }
+        }
+        return count
+    }
+
     // --- filesystem wrappers ---
 
     @JvmStatic

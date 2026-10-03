@@ -305,10 +305,15 @@ public final class BtLEQueue implements Thread.UncaughtExceptionHandler {
             if (state.equalsOrHigherThan(State.CONNECTING)) {
                 LOG.warn("connect - ignored, state is {}", state);
                 return false;
-            } else if (mBluetoothGatt != null) {
-                LOG.warn("connect - ignored, mBluetoothGatt isn't null");
-                return false;
-            } else if (mDisposed.get()) {
+            }
+            if (mBluetoothGatt != null) {
+                // The device is not connected, so this is a leftover handle of a previous attempt
+                // that was never closed (a device support can put the device back to
+                // WAITING_FOR_RECONNECT without dropping the connection). Keeping it would make
+                // this and every further attempt a no-op.
+                disconnect();
+            }
+            if (mDisposed.get()) {
                 LOG.error("connect - queue has already been disposed");
                 String message = mContext.getString(R.string.error_queue_is_dead);
                 throw new IllegalStateException(message);
