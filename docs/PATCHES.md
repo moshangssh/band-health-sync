@@ -360,6 +360,28 @@
   `HUAWEI_SLEEP_STATS_SAMPLE` 与 `HUAWEI_SLEEP_STAGE_SAMPLE` 才知道；两者都按哨兵规则处理，
   真没数据时只是少几个字段（小睡则是整条路径静默不生效），不会传出假值。
 
+### 时钟回拨后自托管同步不再永久停发
+
+- 目的：同步游标存的是「设备已经交给服务器的最后一个时刻」，写入侧 `nextUploadCursor` 用
+  `minOf(now, …)` 封顶，所以正常路径上它不可能超过 `now`。但时钟快过的时候（NTP 校正、手动
+  改时间、从更晚的备份恢复）写下的游标，会在时钟被纠正后落在未来：`uploadWindowStart` 开出的
+  窗口整体在未来，什么都读不到；游标又因为「这一趟没读到数据」而永不前进。此后每一趟都重复
+  同样的空转——没有报错，设置页一直显示上一次的成功状态。
+- 行为：
+  - 读游标时以 `now` 为上界，主游标与睡眠游标一起钳。睡眠游标是同一个暴露面：它被当作「已上传
+    到此为止」喂给 payload，跑到未来会让那一晚的睡眠被判为已发送，同样静默不发；
+  - 钳位放在读取处而不是 `nextUploadCursor`：被钳的那一趟，窗口就恢复成 `[now-24h, now]`，最近
+    一天当趟补发。只改 `nextUploadCursor` 的话那趟仍读到空，却会把游标写成 `now`——等于声称
+    交付了没交付的东西，还要多跑一轮才恢复；
+  - 真的钳到时打一行 warn，带上原值与 `now`，不做静默兜底。换服务器（`otherServer`）是正常
+    路径，不告警；
+  - 正常路径上 `cursor <= now`，`minOf` 返回原值，行为与改动前逐字一致。
+- 覆盖区：`util/selfhostedhealth/SelfHostedHealthSyncWorker.kt`
+- 验证：`SelfHostedHealthSyncWorkerTest` 新增「stored cursors ahead of the clock are pulled back
+  to now」；`selfhostedhealth` 包 84 项单测通过。
+- 限制：被未来游标跨过、且超过 24 小时的数据仍然找不回来。回到 `initialSyncTs` 重扫最多 31 天
+  代价更大，不做；这一条只把「永远卡死」换成「恢复最近一天」。
+
 ### 连接时不下发未经用户设置的睡眠开关
 
 - 目的：阻止 Gadgetbridge 在每次连接时把手表自身的科学睡眠和睡眠呼吸监测关掉。
