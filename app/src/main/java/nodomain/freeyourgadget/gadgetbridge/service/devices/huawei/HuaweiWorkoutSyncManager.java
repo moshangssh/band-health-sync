@@ -212,6 +212,16 @@ public class HuaweiWorkoutSyncManager {
 
     private void handleWorkoutCount(Workout.WorkoutCount.Response packet) {
         if (packet.error != null) {
+            if (packet.error == 0x0001E079) {
+                // 手环刚结束一次运动、还没把它写进运动列表时，对任何时间段的列表查询都回这个错误
+                // （实测同一个区间两分钟后就能查到，连不含任何运动的小区间也照回，所以二分试探
+                // 没有用）。这里什么都不做：起始时间取的是数据库里最后一次运动的结束时间，下一次
+                // 同步会把同一段重新查一遍，那次运动不会丢。
+                LOG.warn("Band is not ready to list workouts yet, ending this sync");
+                this.callback.syncComplete();
+                resetState();
+                return;
+            }
             LOG.error("Error when retrieving/parsing workout count: {}", packet.error);
             syncSmallerTimeslot();
             return;

@@ -87,6 +87,9 @@ import nodomain.freeyourgadget.gadgetbridge.util.StringUtils;
  * It is a separate class so it can easily be used to re-parse the data without database migrations
  */
 public class HuaweiWorkoutGbParser implements ActivitySummaryParser {
+    // 华为恢复心率协议：首点位于运动结束前一个采样间隔。
+    public static final long RECOVERY_HEART_RATE_INTERVAL_MS = 5000L;
+
     private static final Logger LOG = LoggerFactory.getLogger(HuaweiWorkoutGbParser.class);
 
     public static class HuaweiActivityPoint extends ActivityPoint {
@@ -263,11 +266,11 @@ public class HuaweiWorkoutGbParser implements ActivitySummaryParser {
             }
             byte[] recoveryHR = huaweiSummaries.get(0).getRecoveryHeartRates();
             if (recoveryHR != null && recoveryHR.length > 0) {
-                // starts from workoutEndTime - 5000
-                byte[] recHR = StringUtils.hexToBytes(new String(recoveryHR));
+                // 首点为运动结束时间减 RECOVERY_HEART_RATE_INTERVAL_MS。
+                byte[] recHR = StringUtils.hexToBytes(new String(recoveryHR, StandardCharsets.US_ASCII));
                 final List<Entry> heartRateDataPoints = new ArrayList<>();
                 for (int i = 0; i < recHR.length; i++) {
-                    heartRateDataPoints.add(new Entry(i * 5000, recHR[i] & 0xFF));
+                    heartRateDataPoints.add(new Entry(i * RECOVERY_HEART_RATE_INTERVAL_MS, recHR[i] & 0xFF));
                 }
                 charts.add(createRecoveryHeartRateChart(context, heartRateDataPoints));
             }

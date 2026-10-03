@@ -37,9 +37,9 @@ public class SelfHostedHealthPayloadTest {
         assertEquals(0L, payload.getSleepUploadedThrough());
     }
 
-    /** Steps go up as a 5-minute series; the server sums the buckets it holds. */
+    /** 一分钟步数快照保留每分钟分布，并保持总步数不变。 */
     @Test
-    public void stepsAreSummedIntoFiveMinuteBuckets() throws Exception {
+    public void stepsAreSummedIntoOneMinuteBuckets() throws Exception {
         int bucketStart = ts(2026, 9, 1, 8, 0);
         List<ActivitySample> samples = Arrays.asList(
                 steps(bucketStart + 60, 100),
@@ -53,12 +53,33 @@ public class SelfHostedHealthPayloadTest {
 
         assertEquals(2, payload.getDays().size());
         JSONArray steps = bodyFor(payload, "2026-09-01").getJSONArray("steps");
-        assertEquals(2, steps.length());
-        assertEquals(140, steps.getJSONObject(0).getInt("value")); // 100 + 40
-        assertEquals("2026-09-01T08:00:00+08:00", steps.getJSONObject(0).getString("timestamp"));
-        assertEquals(250, steps.getJSONObject(1).getInt("value"));
-        assertEquals("2026-09-01T08:05:00+08:00", steps.getJSONObject(1).getString("timestamp"));
+        assertEquals(3, steps.length());
+        assertEquals(60, bodyFor(payload, "2026-09-01").getInt("steps_bucket_seconds"));
+        assertEquals(100, steps.getJSONObject(0).getInt("value"));
+        assertEquals("2026-09-01T08:01:00+08:00", steps.getJSONObject(0).getString("timestamp"));
+        assertEquals(40, steps.getJSONObject(1).getInt("value"));
+        assertEquals("2026-09-01T08:02:00+08:00", steps.getJSONObject(1).getString("timestamp"));
+        assertEquals(250, steps.getJSONObject(2).getInt("value"));
+        assertEquals("2026-09-01T08:05:00+08:00", steps.getJSONObject(2).getString("timestamp"));
+        int total = 0;
+        for (int i = 0; i < steps.length(); i++) total += steps.getJSONObject(i).getInt("value");
+        assertEquals(390, total);
         assertEquals(70, bodyFor(payload, "2026-09-02").getJSONArray("steps").getJSONObject(0).getInt("value"));
+    }
+
+    @Test
+    public void sameMinuteStepsAreSummedAndKnownZeroDayIsAnEmptySnapshot() throws Exception {
+        int start = ts(2026, 9, 2, 8, 0);
+        SelfHostedHealthPayloadSet payload = SelfHostedHealthPayload.build(
+                Arrays.asList(steps(start, 12), steps(start + 20, 8), heartRate(ts(2026, 9, 3, 8, 0), 65)),
+                ZONE, 0L, ts(2026, 9, 3, 9, 0));
+        JSONArray steps = bodyFor(payload, "2026-09-02").getJSONArray("steps");
+        assertEquals(1, steps.length());
+        assertEquals(20, steps.getJSONObject(0).getInt("value"));
+        JSONObject zeroDay = bodyFor(payload, "2026-09-03");
+        assertEquals(0, zeroDay.getJSONArray("steps").length());
+        assertEquals(60, zeroDay.getInt("steps_bucket_seconds"));
+        assertFalse(zeroDay.has("heart_rate_coverage"));
     }
 
     /** A night that never entered a stage still reports it, as the zero it really is. */
@@ -137,9 +158,9 @@ public class SelfHostedHealthPayloadTest {
         assertEquals("2026-09-02T08:05:00+08:00", heartRate.getJSONObject(3).getString("timestamp"));
     }
 
-    /** A full day is one heart rate point per minute and one step bucket per five. */
+    /** 心率和步数都保持一分钟粒度。 */
     @Test
-    public void aFullDayBucketsHeartRateByMinuteAndStepsByFive() throws Exception {
+    public void aFullDayBucketsHeartRateAndStepsByMinute() throws Exception {
         List<ActivitySample> samples = new ArrayList<>();
         int dayStart = ts(2026, 9, 2, 0, 0);
         for (int minute = 0; minute < 24 * 60; minute++) {
@@ -151,7 +172,11 @@ public class SelfHostedHealthPayloadTest {
                 SelfHostedHealthPayload.build(samples, ZONE, 0L, ts(2026, 9, 3, 1, 0));
 
         assertEquals(1440, bodyFor(payload, "2026-09-02").getJSONArray("heart_rate").length());
-        assertEquals(288, bodyFor(payload, "2026-09-02").getJSONArray("steps").length());
+        JSONArray steps = bodyFor(payload, "2026-09-02").getJSONArray("steps");
+        assertEquals(1440, steps.length());
+        int total = 0;
+        for (int i = 0; i < steps.length(); i++) total += steps.getJSONObject(i).getInt("value");
+        assertEquals(14400, total);
     }
 
     /** 0 means "not measured" and 255 is Gadgetbridge's bad-measurement sentinel; both would land

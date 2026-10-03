@@ -21,6 +21,7 @@ import nodomain.freeyourgadget.gadgetbridge.entities.BaseActivitySummary
 import nodomain.freeyourgadget.gadgetbridge.model.ActivityKind
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySummaryData
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySummaryEntries
+import org.json.JSONArray
 import java.time.ZoneId
 
 /**
@@ -30,19 +31,19 @@ import java.time.ZoneId
  * re-sent after the watch corrected its end time replaces the stored copy instead of landing beside
  * it under a second key. A day the watch recorded two separate workouts on therefore keeps both.
  *
- * The numbers come from the `summaryData` the parser already stored on the row, not from the track
- * file. [WORKOUT_AGGREGATES], [HR_ZONE_AGGREGATES] and [UNIT_NAMED_AGGREGATES] are therefore the
- * whole payload: everything the device measured is here, and a metric it did not measure — one this
- * sport does not have, one this device has no sensor for — is absent from the row and so absent from
- * the payload, rather than sent as a zero. The track file holds the GPS route and the per-second
- * samples, which is the part that is deliberately not uploaded.
+ * 汇总字段来自已保存的 summaryData。可选 heartRate 直接读取运动与恢复心率，保留原始时间戳；
+ * 恢复片段可延伸到 end_time 之后，但不会延长运动时长。GPS 轨迹仍不上传。
  *
  * Pure (no Android, no database) so the field mapping can be unit tested.
  *
  * @param zone zone the ISO times are written in, matching every other timestamp in the payload.
  * @return the point, or null when the row is not a workout.
  */
-internal fun workoutPoint(summary: BaseActivitySummary, zone: ZoneId): SelfHostedHealthPoint? {
+internal fun workoutPoint(
+    summary: BaseActivitySummary,
+    zone: ZoneId,
+    heartRate: JSONArray? = null
+): SelfHostedHealthPoint? {
     val start = summary.startTime?.time ?: return null
     val end = summary.endTime?.time ?: return null
     val kind = ActivityKind.fromCode(summary.activityKind)
@@ -83,6 +84,7 @@ internal fun workoutPoint(summary: BaseActivitySummary, zone: ZoneId): SelfHoste
             fields["${field}_${entry.unit}"] = value.toDouble()
         }
     }
+    if (heartRate != null) fields["heart_rate"] = heartRate
     return SelfHostedHealthPoint(start, fields)
 }
 

@@ -46,13 +46,14 @@ internal fun sleepStatsPoint(sample: HuaweiSleepStatsSample, zone: ZoneId): Self
             "wakeup_time" to time(sample.wakeupTime, zone),
             "sleep_efficiency" to known(sample.sleepEfficiency),
             "sleep_latency" to known(sample.sleepLatency),
+            // deepSleepPart：深睡连续性得分，不是分钟数或占比。
             "deep_part" to known(sample.deepPart),
             "snore_freq" to known(sample.snoreFreq),
             "sleep_data_quality" to known(sample.sleepDataQuality),
             "min_heart_rate" to known(sample.minHeartRate),
             "max_heart_rate" to known(sample.maxHeartRate),
             "avg_heart_rate" to known(sample.avgHeartRate),
-            // The watch's own baseline for the same three metrics, plus how far tonight sat from it.
+            // 四项指标的个人基线区间；*_day_to_baseline 是评估基线所需的佩戴天数，不是生理偏差。
             "min_heart_rate_baseline" to known(sample.minHeartRateBaseline),
             "max_heart_rate_baseline" to known(sample.maxHeartRateBaseline),
             "heart_rate_day_to_baseline" to known(sample.heartRateDayToBaseline),

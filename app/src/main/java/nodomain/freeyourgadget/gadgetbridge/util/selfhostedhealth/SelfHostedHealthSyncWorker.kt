@@ -17,13 +17,16 @@
 package nodomain.freeyourgadget.gadgetbridge.util.selfhostedhealth
 
 import android.content.Context
+import android.widget.Toast
 import androidx.work.Constraints
-import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
-import androidx.work.PeriodicWorkRequest
+import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import nodomain.freeyourgadget.gadgetbridge.BuildConfig
 import nodomain.freeyourgadget.gadgetbridge.GBApplication
 import nodomain.freeyourgadget.gadgetbridge.R
 import nodomain.freeyourgadget.gadgetbridge.devices.HuaweiSleepStageSampleProvider
@@ -32,14 +35,19 @@ import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiEmotionsSampleP
 import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiSampleProvider
 import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiSleepApneaSampleProvider
 import nodomain.freeyourgadget.gadgetbridge.devices.huawei.HuaweiSleepStatsSampleProvider
+import nodomain.freeyourgadget.gadgetbridge.devices.huawei.packets.FitnessData
 import nodomain.freeyourgadget.gadgetbridge.database.DBHelper
 import nodomain.freeyourgadget.gadgetbridge.entities.BaseActivitySummaryDao
 import nodomain.freeyourgadget.gadgetbridge.entities.DaoSession
 import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiActivitySample
+import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiActivitySampleDao
 import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiStressSample
+import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiWorkoutDataSampleDao
+import nodomain.freeyourgadget.gadgetbridge.entities.HuaweiWorkoutSummarySampleDao
 import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample
 import nodomain.freeyourgadget.gadgetbridge.model.ActivityUser
+import nodomain.freeyourgadget.gadgetbridge.util.GB
 import nodomain.freeyourgadget.gadgetbridge.util.GBPrefs
 import nodomain.freeyourgadget.gadgetbridge.util.cycle.CycleContextStore
 import nodomain.freeyourgadget.gadgetbridge.util.cycle.CycleContextSyncWorker
@@ -70,11 +78,26 @@ class SelfHostedHealthSyncWorker(
 ) : Worker(context, params) {
 
     override fun doWork(): Result {
+        val result = runSync()
+
+        // Only the scheduled run owns the schedule: it arms the next one once it is done, so the
+        // grid point is computed from the run that actually happened rather than from a period that
+        // started whenever the last one began. A run WorkManager is going to repeat (a retry) is
+        // still the pending run, so arming another here would just cancel that retry.
+        if (inputData.getBoolean(INPUT_SCHEDULED, false) && result !is Result.Retry) {
+            rescheduleNextRun(applicationContext)
+        }
+
+        return result
+    }
+
+    /** The upload itself. [doWork] is only the scheduling around it. */
+    private fun runSync(): Result {
         val prefs = GBApplication.getPrefs()
 
         // A cycle deletion that never reached the server has no other way back: the local values
-        // are already gone, so nothing but this periodic pass would ever retry it. Checked before
-        // the enabled guard because the leftover copy outlives the sync being switched off.
+        // are already gone, so nothing but this pass would ever retry it. Checked before the enabled
+        // guard because the leftover copy outlives the sync being switched off.
         if (CycleContextStore.pendingClear()) {
             CycleContextSyncWorker.enqueue(applicationContext, clear = true)
         }
@@ -124,7 +147,12 @@ class SelfHostedHealthSyncWorker(
                 prefs.getLong(sleepCursorKey(address), 0L)
             )
             val sleepCursor = cursors.sleepCursor
-            val windowStart = windowStart(prefs, cursors.cursor, now, zone)
+            val windowStart = uploadWindowStart(
+                cursors.cursor,
+                prefs.getLong(GBPrefs.SELF_HOSTED_HEALTH_INITIAL_SYNC_TS, 0L),
+                now,
+                zone
+            )
 
             // Reading and packaging share one guard: neither should be able to throw past doWork,
             // or WorkManager records a bare failure and this screen keeps showing the stale status.
@@ -171,7 +199,10 @@ class SelfHostedHealthSyncWorker(
             // re-send, and a sleep session that was not confirmed must stay eligible.
             if (allSucceeded) {
                 val editor = GBApplication.getPrefs().preferences.edit()
-                editor.putLong(cursorKey(address), now)
+                editor.putLong(
+                    cursorKey(address),
+                    nextUploadCursor(cursors.cursor, payload.dataUploadedThrough, now)
+                )
                 // A night the other server's cursor held back is not one this server has, so when
                 // the target changed this run's result replaces that number outright — zero
                 // included, which is the honest count of what this server has been sent so far.
@@ -192,6 +223,15 @@ class SelfHostedHealthSyncWorker(
                     R.string.selfhosted_health_status_success, timestamp, uploadedDays
                 )
             )
+            // The upload has no visible moment of its own: it runs on an unlock or on the schedule,
+            // with the app closed as often as not, and both of those look exactly like nothing
+            // happening. The toast is the only thing that says it went through.
+            GB.toast(
+                applicationContext,
+                applicationContext.getString(R.string.selfhosted_health_upload_done, uploadedDays),
+                Toast.LENGTH_SHORT,
+                GB.INFO
+            )
             return Result.success()
         }
 
@@ -199,23 +239,6 @@ class SelfHostedHealthSyncWorker(
             applicationContext.getString(R.string.selfhosted_health_status_failed, timestamp, failure)
         )
         return if (retryable && runAttemptCount < MAX_ATTEMPTS) Result.retry() else Result.failure()
-    }
-
-    /**
-     * Lower bound of the samples to read.
-     *
-     * Always a local midnight: the server derives a day's step total from the buckets it holds, so a
-     * window that starts mid-day would report a total missing the morning. The look-back re-covers
-     * recent days because a band delivers data late and out of order.
-     */
-    private fun windowStart(prefs: GBPrefs, cursor: Long, now: Long, zone: ZoneId): Long {
-        val initial = prefs.getLong(GBPrefs.SELF_HOSTED_HEALTH_INITIAL_SYNC_TS, 0L)
-        val fromCursor = if (cursor > 0L) cursor - LOOK_BACK_SECONDS else initial
-        val start = maxOf(fromCursor, initial, now - MAX_WINDOW_SECONDS)
-        return ZonedDateTime.ofInstant(Instant.ofEpochSecond(start), zone)
-            .toLocalDate()
-            .atStartOfDay(zone)
-            .toEpochSecond()
     }
 
     /**
@@ -379,7 +402,12 @@ class SelfHostedHealthSyncWorker(
                     distance = distance,
                     sleepStats = sleepStats,
                     emotions = emotions,
-                    sleepApnea = sleepApnea
+                    sleepApnea = sleepApnea,
+                    heartRateCoverage = if (isHuawei) {
+                        readHeartRateCoverage(device, session, fromTs, toTs, zone)
+                    } else {
+                        null
+                    }
                 ),
                 napMinutes = napMinutes
             )
@@ -410,7 +438,53 @@ class SelfHostedHealthSyncWorker(
                 BaseActivitySummaryDao.Properties.StartTime.lt(Date(toMs))
             )
             .list()
-            .mapNotNull { workoutPoint(it, zone) }
+            .mapNotNull { summary ->
+                val huaweiSummary = if (device.deviceCoordinator is HuaweiCoordinator) {
+                    // Both ends belong in the key. The totals row is written with (workout number,
+                    // start, end) as its identity, and the parser that filled this summary in took
+                    // its endTime from the row it had matched — so the pair names that row exactly.
+                    // On the start alone, two rows for one start (a re-sync whose end moved) tie,
+                    // and greenDAO's unique() takes the first without saying so, attaching the
+                    // heart-rate stream of the other, older recording.
+                    session.huaweiWorkoutSummarySampleDao.queryBuilder()
+                        .where(
+                            HuaweiWorkoutSummarySampleDao.Properties.DeviceId.eq(deviceId),
+                            HuaweiWorkoutSummarySampleDao.Properties.UserId.eq(summary.userId),
+                            HuaweiWorkoutSummarySampleDao.Properties.StartTimestamp.eq(summary.startTime.time / 1000L),
+                            HuaweiWorkoutSummarySampleDao.Properties.EndTimestamp.eq(summary.endTime.time / 1000L)
+                        )
+                        .unique()
+                } else {
+                    null
+                }
+                val heartRate = huaweiSummary?.let {
+                    val readings = session.huaweiWorkoutDataSampleDao.queryBuilder()
+                        .where(HuaweiWorkoutDataSampleDao.Properties.WorkoutId.eq(it.workoutId))
+                        .orderAsc(HuaweiWorkoutDataSampleDao.Properties.Timestamp)
+                        .list()
+                    huaweiWorkoutHeartRate(it, readings, zone)
+                }
+                workoutPoint(summary, zone, heartRate)
+            }
+    }
+
+    private fun readHeartRateCoverage(
+        device: GBDevice,
+        session: DaoSession,
+        fromTs: Long,
+        toTs: Long,
+        zone: ZoneId
+    ): List<SelfHostedHealthPoint> {
+        val deviceId = DBHelper.findDevice(device, session)?.id ?: return emptyList()
+        val samples = session.huaweiActivitySampleDao.queryBuilder()
+            .where(
+                HuaweiActivitySampleDao.Properties.DeviceId.eq(deviceId),
+                HuaweiActivitySampleDao.Properties.Source.eq(FitnessData.MessageData.stepId),
+                HuaweiActivitySampleDao.Properties.Timestamp.lt(toTs),
+                HuaweiActivitySampleDao.Properties.OtherTimestamp.gt(fromTs)
+            )
+            .list()
+        return huaweiHeartRateCoverage(samples, fromTs, toTs, zone)
     }
 
     /**
@@ -482,62 +556,132 @@ class SelfHostedHealthSyncWorker(
         const val INPUT_DEVICE_ADDRESS = "device_address"
         /** True when the run was started by the "Upload now" button, so the log can label it manual. */
         const val INPUT_MANUAL = "manual"
+        /** True on the run the schedule armed, which is the only one that arms its successor. */
+        const val INPUT_SCHEDULED = "scheduled"
         const val WORK_TAG = "SelfHostedHealthSyncWorker"
 
-        /** Unique name for the optional periodic upload, so scheduling it twice just updates it. */
-        private const val PERIODIC_WORK_NAME = "SelfHostedHealthSyncWorker_Periodic"
+        /** Unique name of the one armed run, so arming it twice moves that run instead of adding one. */
+        private const val NEXT_RUN_WORK_NAME = "SelfHostedHealthSyncWorker_Next"
 
         /**
-         * Brings the periodic upload in line with the current settings, and is safe to call any
-         * number of times: it cancels the schedule when the feature is off or the interval is 0, and
-         * otherwise (re)installs one unique periodic work. Called on every settings change and once
-         * when the service starts, so a schedule lost to a reinstall re-arms itself and a daily run
-         * that drifted re-anchors to [startTime].
+         * Queues one upload for [deviceAddress], [delaySeconds] from now.
          *
-         * [enabled], [minutes] and [startTime] default to the stored values but can be passed in from
-         * a settings listener, which fires before the new value is persisted.
+         * Both things that name a moment to upload — data landing and an unlock — come through here,
+         * so they cannot drift apart on the work name, the constraints, or what counts as a device
+         * this sync covers. REPLACE is what keeps a burst to one run: a second trigger moves the
+         * pending upload instead of adding another.
+         */
+        @JvmStatic
+        fun enqueueUpload(context: Context, deviceAddress: String, delaySeconds: Long) {
+            val prefs = GBApplication.getPrefs()
+            if (!prefs.getBoolean(GBPrefs.SELF_HOSTED_HEALTH_ENABLED, false)) {
+                return
+            }
+            val selected = prefs.getStringSet(GBPrefs.SELF_HOSTED_HEALTH_DEVICE_SELECTION, emptySet())
+                .orEmpty()
+                .map { it.uppercase(Locale.ROOT) }
+                .toSet()
+            if (deviceAddress.uppercase(Locale.ROOT) !in selected) {
+                LOG.debug("Ignoring upload for {} - not configured for self-hosted health sync", deviceAddress)
+                return
+            }
+            val request = OneTimeWorkRequest.Builder(SelfHostedHealthSyncWorker::class.java)
+                .addTag(WORK_TAG)
+                .setInitialDelay(delaySeconds, TimeUnit.SECONDS)
+                .setConstraints(
+                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+                )
+                .setInputData(Data.Builder().putString(INPUT_DEVICE_ADDRESS, deviceAddress).build())
+                .build()
+            LOG.debug("Self-hosted health upload for {} scheduled in {}s", deviceAddress, delaySeconds)
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                WORK_TAG + "_" + deviceAddress, ExistingWorkPolicy.REPLACE, request
+            )
+        }
+
+        /**
+         * The periodic run this replaced. An install that predates the change still has it armed in
+         * WorkManager, where it would keep uploading on its drifted time next to the chain, so every
+         * re-arm cancels that name too. Nothing enqueues it any more, which is what makes this a
+         * one-time cleanup rather than part of the schedule.
+         */
+        private const val LEGACY_PERIODIC_WORK_NAME = "SelfHostedHealthSyncWorker_Periodic"
+
+        /**
+         * Brings the armed upload in line with the current settings, and is safe to call any number
+         * of times: it cancels the armed run when the feature is off or the interval is 0, and
+         * otherwise arms one for the next grid point. Called on every settings change, once when the
+         * service starts, and at the end of every scheduled run — so an armed run lost to a reinstall
+         * comes back, and the run that follows a late one is back on the grid.
          *
-         * ponytail: WorkManager only promises "not before" and restarts the period from the last run,
-         * so a run delayed by Doze pushes the next one back. Re-anchoring on service start bounds
-         * that drift; a self-rescheduling one-time chain would remove it, if it ever matters.
+         * A one-time run arming its successor is what makes [startTime] and [minutes] mean what the
+         * settings say. WorkManager restarts a periodic run's period from the run that actually
+         * happened, so one run delayed by Doze pushes every later one and the anchor is gone for
+         * good; a delay computed to a clock time from the run that just finished instead puts the
+         * next run back where it belongs. Re-arming is therefore idempotent: whatever time it is
+         * called at, the point it aims at is the same one.
+         *
+         * [enabled], [minutes], [startTime] and [onUnlock] default to the stored values but can be
+         * passed in from a settings listener, which fires before the new value is persisted.
+         *
+         * Sync on unlock takes the cadence over rather than adding to it: while it is on, the two
+         * interval settings describe a grid nothing is armed on any more, so the run being armed here
+         * is [UNLOCK_INTERVAL_MINUTES] from [UNLOCK_ANCHOR] — every hour on the hour — whatever they
+         * hold, "0" included.
          */
         @JvmStatic
         @JvmOverloads
-        fun reschedulePeriodic(
+        fun rescheduleNextRun(
             context: Context,
             enabled: Boolean = GBApplication.getPrefs().getBoolean(GBPrefs.SELF_HOSTED_HEALTH_ENABLED, false),
             minutes: Int = intervalMinutes(GBApplication.getPrefs()),
             startTime: LocalTime = GBApplication.getPrefs()
-                .getLocalTime(GBPrefs.SELF_HOSTED_HEALTH_SYNC_TIME, DEFAULT_START_TIME)
+                .getLocalTime(GBPrefs.SELF_HOSTED_HEALTH_SYNC_TIME, DEFAULT_START_TIME),
+            onUnlock: Boolean = GBApplication.getPrefs()
+                .getBoolean(GBPrefs.SELF_HOSTED_HEALTH_SYNC_ON_UNLOCK, false)
         ) {
             val workManager = WorkManager.getInstance(context)
-            if (!enabled || minutes <= 0) {
-                workManager.cancelUniqueWork(PERIODIC_WORK_NAME)
-                LOG.info("Self-hosted health periodic upload cancelled (enabled={}, minutes={})", enabled, minutes)
+            workManager.cancelUniqueWork(LEGACY_PERIODIC_WORK_NAME)
+            if (!enabled || (!onUnlock && minutes <= 0)) {
+                workManager.cancelUniqueWork(NEXT_RUN_WORK_NAME)
+                LOG.info(
+                    "Self-hosted health upload cancelled (enabled={}, minutes={}, onUnlock={})",
+                    enabled, minutes, onUnlock
+                )
                 return
             }
+            val interval = if (onUnlock) UNLOCK_INTERVAL_MINUTES else minutes
+            val anchor = if (onUnlock) UNLOCK_ANCHOR else startTime
             val initialDelay = nextRunDelaySeconds(
-                startTime, minutes, ZonedDateTime.now(ZoneId.systemDefault())
+                anchor, interval, ZonedDateTime.now(ZoneId.systemDefault())
             )
-            val request = PeriodicWorkRequest.Builder(
-                SelfHostedHealthSyncWorker::class.java, minutes.toLong(), TimeUnit.MINUTES
-            )
+            val request = OneTimeWorkRequest.Builder(SelfHostedHealthSyncWorker::class.java)
                 .setInitialDelay(initialDelay, TimeUnit.SECONDS)
                 .addTag(WORK_TAG)
                 .setConstraints(
                     Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
                 )
+                .setInputData(Data.Builder().putBoolean(INPUT_SCHEDULED, true).build())
                 .build()
-            // UPDATE keeps the running schedule when nothing changed and only reshuffles when the
-            // interval or the start time actually moved, so reopening the screen does not restart
-            // the timer.
-            workManager.enqueueUniquePeriodicWork(
-                PERIODIC_WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, request
-            )
+            // REPLACE, not KEEP: an armed run for some other point was computed from older settings
+            // or from an older run, and this call is the newer truth about where the next one goes.
+            workManager.enqueueUniqueWork(NEXT_RUN_WORK_NAME, ExistingWorkPolicy.REPLACE, request)
             LOG.info(
-                "Self-hosted health periodic upload scheduled every {} minute(s), first run at {}",
-                minutes, startTime
+                "Self-hosted health upload scheduled every {} minute(s) from {}, next run in {}s",
+                interval, anchor, initialDelay
             )
+        }
+
+        /**
+         * True when the upload wants the device pulled on unlock: the feature is on and the unlock
+         * trigger is on. Both are required — an unlock sync for an upload that is switched off would
+         * be a fetch nobody asked for.
+         */
+        @JvmStatic
+        fun syncOnUnlock(): Boolean {
+            val prefs = GBApplication.getPrefs()
+            return prefs.getBoolean(GBPrefs.SELF_HOSTED_HEALTH_ENABLED, false) &&
+                prefs.getBoolean(GBPrefs.SELF_HOSTED_HEALTH_SYNC_ON_UNLOCK, false)
         }
 
         /** Stored cadence in minutes; 30 by default, so a missed on-event upload still gets a retry.
@@ -549,11 +693,9 @@ class SelfHostedHealthSyncWorker(
          *  grid, and "once a day" uploads at the start of the day until a time is picked. */
         const val DEFAULT_START_TIME = "00:00"
 
-        /** Re-cover this much before the cursor, so data the band delivers late still gets sent. */
-        private const val LOOK_BACK_SECONDS = 24L * 60L * 60L
-
-        /** Ceiling on a single run, so a stale cursor or a far-back start cannot read months at once. */
-        private const val MAX_WINDOW_SECONDS = 31L * 24L * 60L * 60L
+        /** Cadence sync-on-unlock runs on: the clock, once an hour. */
+        private const val UNLOCK_INTERVAL_MINUTES = 60
+        private val UNLOCK_ANCHOR: LocalTime = LocalTime.MIDNIGHT
 
         private const val MAX_ATTEMPTS = 5
 
@@ -611,4 +753,40 @@ internal fun nextRunDelaySeconds(startTime: LocalTime, minutes: Int, now: ZonedD
         anchor.plusMinutes(steps * minutes)
     }
     return Duration.between(now, next).seconds
+}
+
+/** 根目录 gradle.properties：游标之前额外重读的时长，用来接住迟到补拉的数据。 */
+internal const val LOOK_BACK_SECONDS = BuildConfig.SELF_HOSTED_HEALTH_LOOK_BACK_SECONDS
+
+/** 根目录 gradle.properties：单次运行最多往前读的时长，给停止前进的游标封顶。 */
+internal const val MAX_WINDOW_SECONDS = BuildConfig.SELF_HOSTED_HEALTH_MAX_WINDOW_SECONDS
+
+/**
+ * Where the cursor stands after a run that delivered everything through [dataUploadedThrough].
+ *
+ * The cursor is the newest instant the device has actually handed this server, not the wall clock.
+ * A run that read nothing — the band is away, or the fetch it was racing has not landed yet — must
+ * leave it where it is: the old wall-clock cursor walked forward on those empty runs, and the data
+ * that arrived afterwards fell behind `cursor - lookback` and was never sent again. It never moves
+ * backwards, and never past [now], the same horizon the payload builder clamps its sleep settle to.
+ */
+internal fun nextUploadCursor(storedCursor: Long, dataUploadedThrough: Long, now: Long): Long =
+    maxOf(storedCursor, minOf(now, dataUploadedThrough))
+
+/**
+ * Lower bound of the samples to read.
+ *
+ * Always a local midnight: the server derives a day's step total from the buckets it holds, so a
+ * window that starts mid-day would report a total missing the morning. The look-back re-covers
+ * recent days because a band delivers data late and out of order, [initialSyncTs] keeps a fresh
+ * install from reading its whole history at once, and [MAX_WINDOW_SECONDS] caps how far a cursor
+ * that stopped moving can reach back.
+ */
+internal fun uploadWindowStart(cursor: Long, initialSyncTs: Long, now: Long, zone: ZoneId): Long {
+    val fromCursor = if (cursor > 0L) cursor - LOOK_BACK_SECONDS else initialSyncTs
+    val start = maxOf(fromCursor, initialSyncTs, now - MAX_WINDOW_SECONDS)
+    return ZonedDateTime.ofInstant(Instant.ofEpochSecond(start), zone)
+        .toLocalDate()
+        .atStartOfDay(zone)
+        .toEpochSecond()
 }

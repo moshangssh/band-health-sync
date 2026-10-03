@@ -16,6 +16,7 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>. */
 package nodomain.freeyourgadget.gadgetbridge.util.selfhostedhealth
 
+import nodomain.freeyourgadget.gadgetbridge.BuildConfig
 import nodomain.freeyourgadget.gadgetbridge.activities.charts.SleepAnalysis
 import nodomain.freeyourgadget.gadgetbridge.model.ActivityKind
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample
@@ -33,7 +34,13 @@ data class SelfHostedHealthDay(val date: String, val body: JSONObject)
 data class SelfHostedHealthPayloadSet(
     val days: List<SelfHostedHealthDay>,
     /** Latest sleep session end contained in [days], epoch seconds; 0 when no session was included. */
-    val sleepUploadedThrough: Long
+    val sleepUploadedThrough: Long,
+    /**
+     * Newest instant any data in [days] carries, epoch seconds; 0 when the payload holds nothing.
+     * The upload cursor moves to this rather than to the wall clock, so a run that read nothing
+     * cannot advance past data the band has not delivered yet.
+     */
+    val dataUploadedThrough: Long
 )
 
 /**
@@ -63,8 +70,21 @@ data class SelfHostedHealthExtras(
     val sleepStats: List<SelfHostedHealthPoint> = emptyList(),
     val emotions: List<SelfHostedHealthPoint> = emptyList(),
     val sleepApnea: List<SelfHostedHealthPoint> = emptyList(),
-    val workouts: List<SelfHostedHealthPoint> = emptyList()
-)
+    val workouts: List<SelfHostedHealthPoint> = emptyList(),
+    /** null 表示设备没有原始覆盖读取链路；空列表表示所读窗口没有活动历史。 */
+    val heartRateCoverage: List<SelfHostedHealthPoint>? = null
+) {
+    /**
+     * Newest [SelfHostedHealthPoint.timestamp] across every series, epoch milliseconds; 0 when there
+     * is none. Workouts and heart-rate coverage report where they *start*, which is also what decides
+     * the day they belong to, so leaving them at that value keeps the cursor on the same footing as
+     * the read window.
+     */
+    fun newestTimestampMillis(): Long = listOf(
+        spo2, stress, hrv, temperature, restingHeartRate, activeCalories,
+        distance, sleepStats, emotions, sleepApnea, workouts, heartRateCoverage.orEmpty()
+    ).flatten().maxOfOrNull { it.timestamp } ?: 0L
+}
 
 /**
  * Turns raw [ActivitySample]s into the JSON bodies the self-hosted health server ingests.
@@ -72,21 +92,16 @@ data class SelfHostedHealthExtras(
  * Pure by design (no Android, no database, no network) so the wire format can be unit tested,
  * which is the only genuinely unknown part of the direct-upload path.
  *
- * The server merges rather than overwrites: steps and heart rate dedup on the exact timestamp
- * string, and overlapping sleep sessions keep the most complete span. Re-sending data is therefore
- * safe, and this builder leans on that. The sleep cursor still avoids needless repeats; if a later
+ * 步数附带粒度并作为本地整日快照替换，避免从五分钟迁移到一分钟时重复计数。
+ * Heart rate dedups on the exact timestamp string, and overlapping sleep sessions keep the most
+ * complete span. Re-sending data is therefore safe. The sleep cursor avoids needless repeats; if a later
  * fetch grows a night beyond the cursor, the corrected span is sent and replaces the shorter server
  * copy (see the settle rule in [build]).
  */
 object SelfHostedHealthPayload {
-    /**
-     * Steps and heart rate are each downsampled into buckets of their own size, summed and averaged
-     * respectively. The band stores one sample a minute, and heart rate keeps that resolution,
-     * because a five-minute mean smooths away post-exercise peaks. Steps accumulate, so a coarser
-     * bucket serves them.
-     */
-    const val STEPS_BUCKET_SECONDS = 5L * 60L
-    const val HEART_RATE_BUCKET_SECONDS = 60L
+    /** 根目录 gradle.properties 定义聚合粒度；步数求和，心率取平均。 */
+    const val STEPS_BUCKET_SECONDS = BuildConfig.SELF_HOSTED_HEALTH_STEPS_BUCKET_SECONDS
+    const val HEART_RATE_BUCKET_SECONDS = BuildConfig.SELF_HOSTED_HEALTH_HEART_RATE_BUCKET_SECONDS
 
     /**
      * A sleep session is only uploaded once its end is this far behind the newest data we hold.
@@ -147,10 +162,12 @@ object SelfHostedHealthPayload {
         val stepsByDate = LinkedHashMap<LocalDate, LinkedHashMap<Long, Long>>()
         // date -> bucket start -> [bpm sum, sample count]
         val heartRateByDate = LinkedHashMap<LocalDate, LinkedHashMap<Long, IntArray>>()
+        val sampleDates = mutableSetOf<LocalDate>()
 
         for (sample in sorted) {
             val timestamp = sample.timestamp.toLong()
             val date = localDate(timestamp, zone)
+            sampleDates.add(date)
 
             val steps = sample.steps
             if (steps > 0) {
@@ -245,7 +262,13 @@ object SelfHostedHealthPayload {
             }
         }
 
-        // Running totals, merged on the server by taking the larger value, exactly like steps.
+        extras.heartRateCoverage?.let { coverage ->
+            for ((date, spans) in coverage.groupBy { localDate(it.timestamp / 1000L, zone) }) {
+                bodyFor(date).put("heart_rate_coverage", pointArray(spans, zone))
+            }
+        }
+
+        // Daily totals from the complete local sample window.
         for ((key, points) in mapOf(
             "active_calories" to extras.activeCalories,
             "distance" to extras.distance
@@ -256,6 +279,18 @@ object SelfHostedHealthPayload {
             for ((date, list) in points.groupBy { localDate(it.timestamp / 1000L, zone) }) {
                 val total = list.sumOf { (it.fields["value"] as Number).toDouble() }
                 bodyFor(date).put(key, JSONObject().put("total", total))
+            }
+        }
+
+        // Worker 从当地午夜读取完整本地日；空数组也明确替换此前的该日快照。
+        // 只有额外夜报而没有活动样本的日期，不声明步数或覆盖快照。
+        for ((date, body) in bodies) {
+            if (date in sampleDates) {
+                if (!body.has("steps")) body.put("steps", JSONArray())
+                body.put("steps_bucket_seconds", STEPS_BUCKET_SECONDS)
+                if (extras.heartRateCoverage != null && !body.has("heart_rate_coverage")) {
+                    body.put("heart_rate_coverage", JSONArray())
+                }
             }
         }
 
@@ -273,7 +308,16 @@ object SelfHostedHealthPayload {
             .filter { it.length() > 1 }
             .map { SelfHostedHealthDay(it.getString("date"), it) }
 
-        return SelfHostedHealthPayloadSet(days, newestSleepEnd)
+        // Newest instant the payload carries, seconds throughout: samples and sleep sessions already
+        // are, the extra series are milliseconds. Workouts and the coverage spans report their start,
+        // so this never runs ahead of the data the day bodies actually hold.
+        val dataUploadedThrough = maxOf(
+            if (sorted.isEmpty()) 0L else sorted.last().timestamp.toLong(),
+            extras.newestTimestampMillis() / 1000L,
+            newestSleepEnd
+        )
+
+        return SelfHostedHealthPayloadSet(days, newestSleepEnd, dataUploadedThrough)
     }
 
     /**

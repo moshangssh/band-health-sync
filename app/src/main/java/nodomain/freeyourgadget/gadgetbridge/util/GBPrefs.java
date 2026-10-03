@@ -137,6 +137,11 @@ public class GBPrefs extends Prefs {
     public static final String SELF_HOSTED_HEALTH_TOKEN = "selfhosted_health_token";
     public static final String SELF_HOSTED_HEALTH_DEVICE_SELECTION = "selfhosted_health_devices_multiselect";
     public static final String SELF_HOSTED_HEALTH_SYNC_ON_EVENT = "selfhosted_health_sync_on_event";
+    // Pull data from the device on every screen unlock, so the night's data reaches the server
+    // right after the user is up instead of waiting for the next scheduled run. While this is on it
+    // also owns the schedule: the two settings below are out of the picture and the periodic run is
+    // every hour on the hour.
+    public static final String SELF_HOSTED_HEALTH_SYNC_ON_UNLOCK = "selfhosted_health_sync_on_unlock";
     // Minutes between periodic uploads; "0" means the periodic safety net is off and only the
     // post-fetch trigger and the manual button remain.
     public static final String SELF_HOSTED_HEALTH_SYNC_INTERVAL = "selfhosted_health_sync_interval";

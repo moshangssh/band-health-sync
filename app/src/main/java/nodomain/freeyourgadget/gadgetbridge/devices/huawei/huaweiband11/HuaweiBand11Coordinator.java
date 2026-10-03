@@ -27,6 +27,11 @@ import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
 
 public class HuaweiBand11Coordinator extends HuaweiLECoordinator {
     @Override
+    public int getBondingStyle() {
+        return BONDING_STYLE_LAZY;
+    }
+
+    @Override
     protected Pattern getSupportedDeviceName() {
         return Pattern.compile(HuaweiConstants.HU_BAND11_NAME + ".*", Pattern.CASE_INSENSITIVE);
     }

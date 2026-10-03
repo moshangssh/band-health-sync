@@ -3,8 +3,8 @@
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <PreferenceCategory
-        android:key="pref_key_selfhosted_health_general"
-        android:title="@string/pref_header_general"
+        android:key="pref_key_selfhosted_health_server"
+        android:title="@string/pref_selfhosted_health_header_server"
         app:iconSpaceReserved="false">
 
         <SwitchPreferenceCompat
@@ -31,39 +31,31 @@
             android:title="@string/pref_selfhosted_health_token_title"
             app:iconSpaceReserved="true" />
 
-        <Preference
-            android:icon="@drawable/ic_info"
-            android:key="selfhosted_health_notice"
-            android:selectable="false"
-            android:summary="@string/pref_selfhosted_health_notice" />
-
     </PreferenceCategory>
 
     <PreferenceCategory
-        android:key="pref_key_selfhosted_health_sync"
-        android:title="@string/pref_header_sync"
+        android:key="pref_key_selfhosted_health_timing"
+        android:title="@string/pref_selfhosted_health_header_timing"
         app:iconSpaceReserved="false">
 
-        <Preference
-            android:key="selfhosted_health_status"
-            android:selectable="false"
-            android:title="@string/selfhosted_health_status_title"
-            app:iconSpaceReserved="false" />
-
-        <Preference
-            android:icon="@drawable/ic_history"
-            android:key="selfhosted_health_log"
-            android:summary="@string/pref_selfhosted_health_log_summary"
-            android:title="@string/pref_selfhosted_health_log_title"
-            app:iconSpaceReserved="true" />
-
         <SwitchPreferenceCompat
-            android:defaultValue="true"
+            android:defaultValue="false"
+            android:icon="@drawable/ic_bolt"
             android:key="selfhosted_health_sync_on_event"
             android:layout="@layout/preference_checkbox"
             android:summary="@string/pref_selfhosted_health_sync_on_event_summary"
             android:title="@string/pref_selfhosted_health_sync_on_event_title"
-            app:iconSpaceReserved="false" />
+            app:iconSpaceReserved="true" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:dependency="selfhosted_health_enabled"
+            android:icon="@drawable/ic_lock_open"
+            android:key="selfhosted_health_sync_on_unlock"
+            android:layout="@layout/preference_checkbox"
+            android:summary="@string/pref_selfhosted_health_sync_on_unlock_summary"
+            android:title="@string/pref_selfhosted_health_sync_on_unlock_title"
+            app:iconSpaceReserved="true" />
 
         <ListPreference
             android:defaultValue="30"
@@ -82,11 +74,25 @@
             android:key="selfhosted_health_sync_time"
             android:title="@string/pref_selfhosted_health_sync_time_title" />
 
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:key="pref_key_selfhosted_health_upload"
+        android:title="@string/pref_selfhosted_health_header_upload"
+        app:iconSpaceReserved="false">
+
         <Preference
             android:icon="@drawable/ic_sync"
             android:key="selfhosted_health_sync_now"
             android:summary="@string/pref_selfhosted_health_sync_now_summary"
             android:title="@string/pref_selfhosted_health_sync_now_title"
+            app:iconSpaceReserved="true" />
+
+        <Preference
+            android:icon="@drawable/ic_history"
+            android:key="selfhosted_health_log"
+            android:summary="@string/pref_selfhosted_health_log_summary"
+            android:title="@string/pref_selfhosted_health_log_title"
             app:iconSpaceReserved="true" />
 
         <Preference

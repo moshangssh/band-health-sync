@@ -164,6 +164,38 @@ class SelfHostedHealthExtrasTest {
 
         assertTrue(payload.days.isEmpty())
         assertEquals(0L, payload.sleepUploadedThrough)
+        assertEquals(0L, payload.dataUploadedThrough)
+    }
+
+    /** The cursor is anchored on the data, so the newest point the payload carries decides it. */
+    @Test
+    fun `the payload reports its newest reading through, in seconds`() {
+        val extras = SelfHostedHealthExtras(
+            spo2 = listOf(point(ts(2026, 9, 2, 8, 0), "value" to 96)),
+            hrv = listOf(point(ts(2026, 9, 2, 21, 30), "value" to 42))
+        )
+
+        val payload = SelfHostedHealthPayload.build(emptyList(), zone, 0L, ts(2026, 9, 2, 23, 0), extras)
+
+        assertEquals(ts(2026, 9, 2, 21, 30), payload.dataUploadedThrough)
+    }
+
+    /**
+     * A workout's point is where it started, which is also what decides the day it belongs to and
+     * what the read window matches on. Its end must not drag the cursor past anything.
+     */
+    @Test
+    fun `a workout contributes its start, not its end`() {
+        val start = ts(2026, 9, 2, 18, 0)
+        val extras = SelfHostedHealthExtras(
+            workouts = listOf(
+                point(start, "end_time" to "2026-09-02T20:00:00+08:00")
+            )
+        )
+
+        val payload = SelfHostedHealthPayload.build(emptyList(), zone, 0L, ts(2026, 9, 2, 23, 0), extras)
+
+        assertEquals(start, payload.dataUploadedThrough)
     }
 
     /** [timestamp] is epoch seconds; the payload's points carry milliseconds. */
