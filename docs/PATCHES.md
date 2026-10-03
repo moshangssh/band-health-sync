@@ -306,11 +306,14 @@
 - 覆盖区：
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthPayload.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiSleepStatsPayload.kt`
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiBodyBatteryPayload.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/devices/huawei/HuaweiSampleProvider.java`（只加了睡眠 stage 编码的具名常量，并把 `toActivityKind` 里的字面量换成它们）
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthProfile.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthWorkout.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthUploader.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthSyncWorker.kt`
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthEndpoint.kt`
+  - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthLog.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/activities/preferences/SelfHostedHealthPreferencesActivity.kt`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/activities/selfhostedhealth/`
   - `app/src/main/java/nodomain/freeyourgadget/gadgetbridge/externalevents/NewDataReceiver.java`
@@ -330,8 +333,14 @@
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiSleepStatsPayloadTest.kt`
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthWorkoutTest.kt`
   - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthLogTest.java`
-- 验证：`SelfHostedHealthPayloadTest` 12 项、`HuaweiSleepStatsPayloadTest` 7 项、`SelfHostedHealthExtrasTest` 7 项、`SelfHostedHealthSyncWorkerTest` 7 项、`SelfHostedHealthProfileTest` 3 项、
-  `SelfHostedHealthWorkoutTest` 7 项、`SelfHostedHealthLogTest` 6 项通过；服务端 `node --test`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthSyncWorkerTest.kt`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/SelfHostedHealthEndpointTest.java`
+  - `app/src/test/java/nodomain/freeyourgadget/gadgetbridge/util/selfhostedhealth/HuaweiBodyBatteryPayloadTest.kt`
+- 验证：`selfhostedhealth` 包 84 项单测通过——`SelfHostedHealthSyncWorkerTest` 21 项、
+  `SelfHostedHealthEndpointTest` 14 项、`SelfHostedHealthPayloadTest` 13 项、
+  `SelfHostedHealthExtrasTest` 9 项、`HuaweiSleepStatsPayloadTest` 7 项、
+  `SelfHostedHealthWorkoutTest` 7 项、`SelfHostedHealthLogTest` 6 项、
+  `HuaweiBodyBatteryPayloadTest` 4 项、`SelfHostedHealthProfileTest` 3 项；服务端 `node --test`
   26 项通过；`assembleMainlineDebug` 通过，合并后的
   manifest 确认带 INTERNET 且注册了新 Activity；构建产出的真实 payload 用 Node 回放进
   `mcp/health-server.js` 的 `mergeHealthData`，落盘结果正确（步数按桶落盘、当日步数总数为各桶之和，
