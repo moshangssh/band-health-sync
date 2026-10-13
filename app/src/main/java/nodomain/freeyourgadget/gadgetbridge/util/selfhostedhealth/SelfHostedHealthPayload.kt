@@ -28,8 +28,14 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** One `POST /api/health` body, already scoped to the day the server files it under. */
-data class SelfHostedHealthDay(val date: String, val body: JSONObject)
+/**
+ * One `POST /api/health` body, already scoped to the day the server files it under.
+ *
+ * [newestTimestamp] is the newest instant this day's body carries, epoch seconds; 0 when it holds
+ * nothing timestamped. The look-back window re-sends whole days whether or not they changed, so the
+ * caller compares this against its cursor to tell a day that brought fresh data from a re-send.
+ */
+data class SelfHostedHealthDay(val date: String, val body: JSONObject, val newestTimestamp: Long)
 
 data class SelfHostedHealthPayloadSet(
     val days: List<SelfHostedHealthDay>,
@@ -158,6 +164,16 @@ object SelfHostedHealthPayload {
         fun bodyFor(date: LocalDate): JSONObject =
             bodies.getOrPut(date) { JSONObject().put("date", date.toString()) }
 
+        // Newest instant each day's body ends up carrying, epoch seconds, recorded at every place a
+        // reading is attributed to a date so it cannot drift from the body itself.
+        val newestByDate = mutableMapOf<LocalDate, Long>()
+        fun touch(date: LocalDate, timestampSecond: Long) {
+            val current = newestByDate[date]
+            if (current == null || timestampSecond > current) {
+                newestByDate[date] = timestampSecond
+            }
+        }
+
         // date -> bucket start -> steps counted inside that bucket
         val stepsByDate = LinkedHashMap<LocalDate, LinkedHashMap<Long, Long>>()
         // date -> bucket start -> [bpm sum, sample count]
@@ -168,6 +184,7 @@ object SelfHostedHealthPayload {
             val timestamp = sample.timestamp.toLong()
             val date = localDate(timestamp, zone)
             sampleDates.add(date)
+            touch(date, timestamp)
 
             val steps = sample.steps
             if (steps > 0) {
@@ -220,6 +237,7 @@ object SelfHostedHealthPayload {
                 if (asleepSeconds <= 0) {
                     continue
                 }
+                touch(localDate(end, zone), end)
                 sleepByDate
                     .getOrPut(localDate(end, zone)) { mutableListOf() }
                     .add(sessionJson(start, end, asleepSeconds, stages, zone))
@@ -258,12 +276,14 @@ object SelfHostedHealthPayload {
                 continue
             }
             for ((date, list) in points.groupBy { localDate(it.timestamp / 1000L, zone) }) {
+                touch(date, list.maxOf { it.timestamp } / 1000L)
                 bodyFor(date).put(key, pointArray(list, zone))
             }
         }
 
         extras.heartRateCoverage?.let { coverage ->
             for ((date, spans) in coverage.groupBy { localDate(it.timestamp / 1000L, zone) }) {
+                touch(date, spans.maxOf { it.timestamp } / 1000L)
                 bodyFor(date).put("heart_rate_coverage", pointArray(spans, zone))
             }
         }
@@ -277,6 +297,7 @@ object SelfHostedHealthPayload {
                 continue
             }
             for ((date, list) in points.groupBy { localDate(it.timestamp / 1000L, zone) }) {
+                touch(date, list.maxOf { it.timestamp } / 1000L)
                 val total = list.sumOf { (it.fields["value"] as Number).toDouble() }
                 bodyFor(date).put(key, JSONObject().put("total", total))
             }
@@ -304,9 +325,9 @@ object SelfHostedHealthPayload {
         }
 
         // "date" alone carries no data and would still rewrite the server's file.
-        val days = bodies.values
-            .filter { it.length() > 1 }
-            .map { SelfHostedHealthDay(it.getString("date"), it) }
+        val days = bodies.entries
+            .filter { it.value.length() > 1 }
+            .map { (date, body) -> SelfHostedHealthDay(date.toString(), body, newestByDate[date] ?: 0L) }
 
         // Newest instant the payload carries, seconds throughout: samples and sleep sessions already
         // are, the extra series are milliseconds. Workouts and the coverage spans report their start,

@@ -133,7 +133,9 @@ class SelfHostedHealthSyncWorker(
         // One entry per posted day, written to the sync log in a single batch at the end.
         val logEntries = mutableListOf<SelfHostedHealthLogEntry>()
 
-        var uploadedDays = 0
+        // Days that carried data newer than this device's cursor. The look-back re-sends the whole
+        // window every run, so counting posted day bodies would report the same number forever.
+        var newDays = 0
         var retryable = false
         var failure: String? = null
 
@@ -193,7 +195,8 @@ class SelfHostedHealthSyncWorker(
                 // Logged whether it succeeded or failed: the point of the log is to see the failures.
                 logEntries.add(logEntry(day, deviceName, url, manual, result))
                 when (result) {
-                    is SelfHostedHealthUploadResult.Success -> uploadedDays++
+                    is SelfHostedHealthUploadResult.Success ->
+                        if (day.newestTimestamp > cursors.cursor) newDays++
                     is SelfHostedHealthUploadResult.Failure -> {
                         LOG.warn("Upload of {} failed: {}", day.date, result.message)
                         allSucceeded = false
@@ -230,16 +233,26 @@ class SelfHostedHealthSyncWorker(
         val timestamp = TIME_FORMAT.format(ZonedDateTime.ofInstant(Instant.ofEpochSecond(now), zone))
         if (failure == null) {
             storeStatus(
-                applicationContext.getString(
-                    R.string.selfhosted_health_status_success, timestamp, uploadedDays
-                )
+                if (newDays > 0) {
+                    applicationContext.getString(
+                        R.string.selfhosted_health_status_success, timestamp, newDays
+                    )
+                } else {
+                    applicationContext.getString(
+                        R.string.selfhosted_health_status_success_no_new, timestamp
+                    )
+                }
             )
             // The upload has no visible moment of its own: it runs on an unlock or on the schedule,
             // with the app closed as often as not, and both of those look exactly like nothing
             // happening. The toast is the only thing that says it went through.
             GB.toast(
                 applicationContext,
-                applicationContext.getString(R.string.selfhosted_health_upload_done, uploadedDays),
+                if (newDays > 0) {
+                    applicationContext.getString(R.string.selfhosted_health_upload_done, newDays)
+                } else {
+                    applicationContext.getString(R.string.selfhosted_health_upload_done_no_new)
+                },
                 Toast.LENGTH_SHORT,
                 GB.INFO
             )

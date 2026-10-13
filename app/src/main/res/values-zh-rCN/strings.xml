@@ -4289,12 +4289,14 @@
     <string name="pref_selfhosted_health_device_selection">选择要上传的设备</string>
     <string name="pref_selfhosted_health_device_selection_summary">只上传选中的设备</string>
     <string name="pref_selfhosted_health_device_selection_selected">已选择：%1$s</string>
-    <string name="selfhosted_health_status_success">上次：%1$s · 已上传 %2$d 天</string>
+    <string name="selfhosted_health_status_success">上次：%1$s · 已上传 %2$d 天新数据</string>
+    <string name="selfhosted_health_status_success_no_new">上次：%1$s · 已上传 · 无新数据</string>
     <string name="selfhosted_health_status_failed">上次：%1$s · 失败：%2$s</string>
     <string name="selfhosted_health_status_not_configured">服务器地址或令牌没填</string>
     <string name="selfhosted_health_status_no_devices">没有选择设备</string>
     <string name="selfhosted_health_upload_started">已开始上传</string>
-    <string name="selfhosted_health_upload_done">已上传 %1$d 天</string>
+    <string name="selfhosted_health_upload_done">已上传 %1$d 天新数据</string>
+    <string name="selfhosted_health_upload_done_no_new">已上传 · 无新数据</string>
     <string name="pref_selfhosted_health_log_title">同步日志</string>
     <string name="pref_selfhosted_health_log_summary">每一次上传的状态和 Payload</string>
     <string name="selfhosted_health_log_title">同步日志</string>
