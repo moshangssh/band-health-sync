@@ -1,0 +1,8 @@
+<resources>
+    <string name="module_name">Band Health Sync 保活</string>
+    <string name="module_description">health band sync 进程启动后常驻前台服务，让系统不必在空闲时把它当缓存进程回收。</string>
+
+    <string-array name="xposed_scope">
+        <item>nodomain.freeyourgadget.gadgetbridge.toge</item>
+    </string-array>
+</resources>
